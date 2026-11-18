@@ -79,6 +79,13 @@ export interface Lead {
   // R-606: emails to it that failed, and the latest error.
   failed?: number;
   failed_error?: string;
+  // R-654, worked out on the server by the rule Queue takes from (absent from a server before deploy-330):
+  /** Where it stands with the first email. */
+  mail?: MailStage;
+  /** Why it was left out ("" unless `mail` is left_out). */
+  mail_why?: string;
+  /** The day a waiting email goes: "today", "tomorrow" or "Nov 18". */
+  goes?: string;
   // R-631, absent from a server before it:
   country?: string;
   checks?: Checks;
@@ -94,7 +101,7 @@ export interface LeadListName {
   name: string; total: number; emailed: number; replied: number; texted: number; suppliers: number;
   /** R-643: deals closed (absent from a server before it). */
   converted?: number;
-  // R-606/R-609: waiting to send, failed, and never emailed yet (what Queue everyone not emailed takes).
+  // R-606/R-609: waiting to send, failed, and never emailed yet (exactly what Queue takes, R-654).
   waiting?: number; failed?: number; not_emailed?: number;
 }
 export interface MapPin { id: string; lat: number; lng: number; place: "street" | "city" }
@@ -209,8 +216,9 @@ export const outreach = {
   supplierLinks: () => call<{ links: SupplierLink[] }>("GET", "/api/outreach/supplier-links"),
   importSheet: (name: string, data: string, source = "") =>
     call<ImportAnswer>("POST", "/api/outreach/import", { name, data, source }),
-  /** R-609: the first email, in the saved words, for everyone on the list ("" = every list) never emailed. */
-  queueAll: (list: string) => call<{ queued: number; left_out: number }>("POST", "/api/outreach/queue-all", { list }),
+  /** R-654: the first email, in the saved words, for the warehouses picked; each one not queued comes back with why. */
+  queuePicked: (lead_ids: string[]) =>
+    call<{ queued: number; left_out: number; left?: Skipped[] }>("POST", "/api/outreach/queue-all", { lead_ids }),
   preview: (lead_ids: string[], subject: string, body: string) =>
     call<{ emails: DraftEmail[]; skipped: Skipped[] }>("POST", "/api/outreach/preview", { lead_ids, subject, body }),
   bumps: (body: string) => call<{ emails: DraftEmail[]; skipped: Skipped[] }>("POST", "/api/outreach/bumps", { body }),
@@ -269,20 +277,75 @@ export function stageOf(l: Lead): Stage {
   return l.queued ? "waiting" : "not_emailed";
 }
 
-/** The chips over the warehouses. `due` and `all` as before; the rest read what the server worked out. */
-export const REACH: [string, string][] = [
-  ["due", "Due today"], ["all", "All"], ["not_emailed", "Not emailed"], ["emailed", "Emailed"], ["replied", "Replied"],
-  ["no_reply", "No reply yet"], ["texted", "Texted"], ["failed", "Failed"],
+/** R-654: where a warehouse stands with the first email. One rule on the server makes it, and Queue takes from it,
+ *  so the count of not emailed is the number that gets queued. */
+export type MailStage = "not_emailed" | "waiting" | "sent" | "replied" | "failed" | "left_out";
+/** The counts across the top, in the order an email moves. */
+export const MAIL: [MailStage, string][] = [
+  ["not_emailed", "Not emailed"], ["waiting", "Waiting to send"], ["sent", "Sent"], ["replied", "Replied"], ["failed", "Failed"], ["left_out", "Left out"],
 ];
+/** The server's word, or the nearest from what a server before deploy-330 sends. */
+export function mailOf(l: Lead): MailStage {
+  if (l.mail) return l.mail;
+  if (l.replied) return "replied";
+  if (l.emailed) return "sent";
+  if (l.queued) return "waiting";
+  if (l.failed) return "failed";
+  return l.email && (l.status === "new" || l.status === "called") ? "not_emailed" : "left_out";
+}
+/** The two lines in a warehouse's email column: what happened, then when or why. */
+export function mailLines(l: Lead): [string, string] {
+  const day = (iso: string | undefined) => {
+    const t = iso ? new Date(iso) : null;
+    return t && !isNaN(t.getTime()) ? t.toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "";
+  };
+  switch (mailOf(l)) {
+    case "waiting": return ["Waiting to send", l.goes ? `Goes ${l.goes}` : ""];
+    case "sent": return ["Sent", day(l.first_email_at)];
+    case "replied": return ["Replied", day(l.said?.kind === "reply" ? l.said.at : undefined)];
+    case "failed": return ["Failed to send", "Open it to try again"];
+    case "left_out": return ["Left out", l.mail_why || (l.email ? "" : "No email address")];
+    default: return ["Not emailed", ""];
+  }
+}
+
+/** R-671: the waiting first emails by the day they go, soonest first, from the server's word for each ("today",
+ *  "tomorrow", "Nov 18"). `day` is "Today", "Tomorrow" or the weekday; `date` is "Nov 18". */
+export function rollout(leads: Lead[], now: Date = new Date()): { day: string; date: string; n: number }[] {
+  const base = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const at = (w: string): number => {
+    if (w === "today") return base;
+    if (w === "tomorrow") return base + 864e5;
+    const d = new Date(`${w} ${now.getFullYear()}`);
+    if (isNaN(d.getTime())) return NaN;
+    // "Jan 2" seen in late December is next year.
+    if (d.getTime() < base - 30 * 864e5) d.setFullYear(d.getFullYear() + 1);
+    return d.getTime();
+  };
+  const by = new Map<number, number>();
+  for (const l of leads) {
+    if (mailOf(l) !== "waiting" || !l.goes) continue;
+    const t = at(l.goes);
+    if (!isNaN(t)) by.set(t, (by.get(t) ?? 0) + 1);
+  }
+  return [...by.entries()].sort((a, b) => a[0] - b[0]).map(([t, n]) => {
+    const d = new Date(t);
+    return {
+      day: t === base ? "Today" : t === base + 864e5 ? "Tomorrow" : d.toLocaleDateString("en-US", { weekday: "short" }),
+      date: d.toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+      n,
+    };
+  });
+}
+
+/** The chips beside the search: the calling ones. The email counts across the top filter by `mail`. */
+export const REACH: [string, string][] = [["due", "Due today"], ["no_reply", "No reply yet"], ["texted", "Texted"]];
 export function inReach(l: Lead, f: string): boolean {
+  if (MAIL.some(([m]) => m === f)) return mailOf(l) === f;
   switch (f) {
     case "due": return !!l.due;
-    case "not_emailed": return !l.emailed;
-    case "emailed": return !!l.emailed;
-    case "replied": return !!l.replied;
     case "no_reply": return !!l.no_reply;
     case "texted": return !!l.texted;
-    case "failed": return (l.failed ?? 0) > 0;
     default: return true;
   }
 }

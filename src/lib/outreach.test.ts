@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { emailedLine, inReach, rate, saidLine, spread, stageOf, type Lead } from "./outreach";
+import { emailedLine, inReach, mailLines, mailOf, rate, rollout, saidLine, spread, stageOf, type Lead } from "./outreach";
 
 // R-581: the Cold calls rules this screen keeps for itself. Everything else (emailed, replied, no reply, texted,
 // what they said) the server works out; these only read it.
@@ -37,9 +37,43 @@ describe("Cold calls lists and the map", () => {
   });
 
   it("filters by what the server worked out", () => {
-    const l = lead({ emailed: true, no_reply: true });
-    expect([inReach(l, "emailed"), inReach(l, "not_emailed"), inReach(l, "no_reply"), inReach(l, "texted"), inReach(l, "all")]).toEqual([true, false, true, false, true]);
+    const l = lead({ emailed: true, no_reply: true, mail: "sent" });
+    expect([inReach(l, "sent"), inReach(l, "not_emailed"), inReach(l, "no_reply"), inReach(l, "texted"), inReach(l, "all")]).toEqual([true, false, true, false, true]);
     expect(inReach(lead({ texted: { at: "2026-11-04T15:00:00Z", by: "Dana" } }), "texted")).toBe(true);
+  });
+
+  it("takes where it stands with the first email from the server, the same rule Queue takes from (R-654)", () => {
+    // The server's word wins: a New one with an email it left out (same address as another) is not counted as not emailed.
+    expect(mailOf(lead({ email: "a@b.test", mail: "left_out", mail_why: "Same email address as Echo Prep" }))).toBe("left_out");
+    expect(inReach(lead({ email: "a@b.test", mail: "left_out" }), "not_emailed")).toBe(false);
+    expect(inReach(lead({ mail: "waiting" }), "waiting")).toBe(true);
+    // A server before deploy-330 sends no word: the nearest from what it does send.
+    expect(mailOf(lead({ email: "a@b.test" }))).toBe("not_emailed");
+    expect(mailOf(lead())).toBe("left_out");
+    expect(mailOf(lead({ email: "a@b.test", status: "not_now" }))).toBe("left_out");
+    expect(mailOf(lead({ email: "a@b.test", queued: 1 }))).toBe("waiting");
+    expect(mailOf(lead({ emailed: true, replied: true }))).toBe("replied");
+  });
+
+  it("writes the email column: what happened, then when or why (R-654)", () => {
+    expect(mailLines(lead({ mail: "not_emailed" }))).toEqual(["Not emailed", ""]);
+    expect(mailLines(lead({ mail: "waiting", goes: "Nov 18" }))).toEqual(["Waiting to send", "Goes Nov 18"]);
+    expect(mailLines(lead({ mail: "sent", first_email_at: "2026-10-20T15:00:00Z" }))).toEqual(["Sent", "Oct 20"]);
+    expect(mailLines(lead({ mail: "replied", said: { kind: "reply", outcome: "", text: "", tags: [], at: "2026-10-22T15:00:00Z", by: "" } }))).toEqual(["Replied", "Oct 22"]);
+    expect(mailLines(lead({ mail: "left_out", mail_why: "Same email address as Echo Prep" }))).toEqual(["Left out", "Same email address as Echo Prep"]);
+    expect(mailLines(lead({ mail: "failed" }))[0]).toBe("Failed to send");
+  });
+
+  it("groups the waiting emails by the day they go, soonest first (R-671)", () => {
+    const now = new Date(2026, 10, 18, 10); // Wed Nov 18
+    const w = (id: string, goes: string) => lead({ id, mail: "waiting", goes });
+    const days = rollout([w("a", "Nov 23"), w("b", "today"), w("c", "tomorrow"), w("d", "today"), lead({ id: "e", mail: "sent" }), w("f", "Nov 23")], now);
+    expect(days).toEqual([
+      { day: "Today", date: "Nov 18", n: 2 }, { day: "Tomorrow", date: "Nov 19", n: 1 }, { day: "Mon", date: "Nov 23", n: 2 },
+    ]);
+    // Late December: "Jan 4" is next year, after the December days.
+    const dec = new Date(2026, 11, 30, 10);
+    expect(rollout([w("a", "Jan 4"), w("b", "Dec 31")], dec).map((d) => d.date)).toEqual(["Dec 31", "Jan 4"]);
   });
 
   it("says what they said, else the last call or note", () => {
