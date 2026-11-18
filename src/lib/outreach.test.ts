@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { emailedLine, inReach, mailLines, mailOf, rate, saidLine, spread, stageOf, type Lead } from "./outreach";
+import { emailedLine, inReach, mailLines, mailOf, rate, rollout, saidLine, spread, stageOf, type Lead } from "./outreach";
 
 // R-581: the Cold calls rules this screen keeps for itself. Everything else (emailed, replied, no reply, texted,
 // what they said) the server works out; these only read it.
@@ -62,6 +62,18 @@ describe("Cold calls lists and the map", () => {
     expect(mailLines(lead({ mail: "replied", said: { kind: "reply", outcome: "", text: "", tags: [], at: "2026-10-22T15:00:00Z", by: "" } }))).toEqual(["Replied", "Oct 22"]);
     expect(mailLines(lead({ mail: "left_out", mail_why: "Same email address as Echo Prep" }))).toEqual(["Left out", "Same email address as Echo Prep"]);
     expect(mailLines(lead({ mail: "failed" }))[0]).toBe("Failed to send");
+  });
+
+  it("groups the waiting emails by the day they go, soonest first (R-671)", () => {
+    const now = new Date(2026, 10, 18, 10); // Wed Nov 18
+    const w = (id: string, goes: string) => lead({ id, mail: "waiting", goes });
+    const days = rollout([w("a", "Nov 23"), w("b", "today"), w("c", "tomorrow"), w("d", "today"), lead({ id: "e", mail: "sent" }), w("f", "Nov 23")], now);
+    expect(days).toEqual([
+      { day: "Today", date: "Nov 18", n: 2 }, { day: "Tomorrow", date: "Nov 19", n: 1 }, { day: "Mon", date: "Nov 23", n: 2 },
+    ]);
+    // Late December: "Jan 4" is next year, after the December days.
+    const dec = new Date(2026, 11, 30, 10);
+    expect(rollout([w("a", "Jan 4"), w("b", "Dec 31")], dec).map((d) => d.date)).toEqual(["Dec 31", "Jan 4"]);
   });
 
   it("says what they said, else the last call or note", () => {

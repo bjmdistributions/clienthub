@@ -309,6 +309,35 @@ export function mailLines(l: Lead): [string, string] {
   }
 }
 
+/** R-671: the waiting first emails by the day they go, soonest first, from the server's word for each ("today",
+ *  "tomorrow", "Nov 18"). `day` is "Today", "Tomorrow" or the weekday; `date` is "Nov 18". */
+export function rollout(leads: Lead[], now: Date = new Date()): { day: string; date: string; n: number }[] {
+  const base = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const at = (w: string): number => {
+    if (w === "today") return base;
+    if (w === "tomorrow") return base + 864e5;
+    const d = new Date(`${w} ${now.getFullYear()}`);
+    if (isNaN(d.getTime())) return NaN;
+    // "Jan 2" seen in late December is next year.
+    if (d.getTime() < base - 30 * 864e5) d.setFullYear(d.getFullYear() + 1);
+    return d.getTime();
+  };
+  const by = new Map<number, number>();
+  for (const l of leads) {
+    if (mailOf(l) !== "waiting" || !l.goes) continue;
+    const t = at(l.goes);
+    if (!isNaN(t)) by.set(t, (by.get(t) ?? 0) + 1);
+  }
+  return [...by.entries()].sort((a, b) => a[0] - b[0]).map(([t, n]) => {
+    const d = new Date(t);
+    return {
+      day: t === base ? "Today" : t === base + 864e5 ? "Tomorrow" : d.toLocaleDateString("en-US", { weekday: "short" }),
+      date: d.toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+      n,
+    };
+  });
+}
+
 /** The chips beside the search: the calling ones. The email counts across the top filter by `mail`. */
 export const REACH: [string, string][] = [["due", "Due today"], ["no_reply", "No reply yet"], ["texted", "Texted"]];
 export function inReach(l: Lead, f: string): boolean {

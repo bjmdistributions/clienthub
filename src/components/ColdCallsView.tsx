@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, Copy, FileUp, ListChecks, Mail, Pencil, Phone, Plus, Reply, Search, Settings2, X } from "lucide-react";
+import { Check, ChevronRight, Copy, FileUp, ListChecks, Mail, Pencil, Phone, Plus, Reply, Search, Send, Settings2, X } from "lucide-react";
 import StatusPill from "./StatusPill";
-import { PageActions, Tabs } from "./ui";
+import { PageActions, Tabs, useCountUp } from "./ui";
 import ColdCallsMap from "./ColdCallsMap";
 import { copyText, COPY_FAILED } from "../lib/clipboard";
 import { toast } from "./Toast";
@@ -10,7 +10,7 @@ import { can } from "../lib/permissions";
 import { useSessionMe } from "../lib/useSessionMe";
 import { api, type Supplier } from "../lib/api";
 import {
-  ANSWERED_HOW, KIND_LABEL, OVERSEAS_CHECKS, isOverseas, OUTCOMES, OUTCOME_LABEL, REACH, REPLY_TAG, STATUSES, STATUS_LABEL, TOKENS, emailedLine, inReach, MAIL, mailLines, mailOf, nextLine,
+  ANSWERED_HOW, KIND_LABEL, OVERSEAS_CHECKS, isOverseas, OUTCOMES, OUTCOME_LABEL, REACH, REPLY_TAG, STATUSES, STATUS_LABEL, TOKENS, emailedLine, inReach, MAIL, mailLines, mailOf, nextLine, rollout,
   COLD_LEAD_OPEN_KEY, outreach, rate, saidLine, sendable, type DraftEmail, type ImportAnswer, type LeadListName, type Lead, type LeadDetail, type LeadList, type LeadStatus, type MailStage, type OutreachReply, type PumpState, type Skipped,
 } from "../lib/outreach";
 
@@ -32,7 +32,7 @@ const TONE: Record<LeadStatus, "neutral" | "step" | "accent" | "warning" | "succ
 // R-643: Converted is the green one (a deal closed); Supplier is plain ink so the two never read alike.
 // R-654: the email column's colour: what can go and what went wrong stand out, what is done stays quiet.
 const MAIL_TONE: Record<MailStage, string> = {
-  not_emailed: "text-ink", waiting: "text-warning-ink", sent: "text-ink-2", replied: "text-success-ink", failed: "text-danger-ink", left_out: "text-muted",
+  not_emailed: "text-ink", waiting: "text-step-now", sent: "text-ink-2", replied: "text-success-ink", failed: "text-danger-ink", left_out: "text-muted",
 };
 const Pill = ({ s }: { s: LeadStatus }) => s === "supplier"
   ? <StatusPill className="text-ink bg-surface-3" size="md">{STATUS_LABEL[s]}</StatusPill>
@@ -196,15 +196,16 @@ export default function ColdCallsView() {
     rd.readAsDataURL(f);
   };
 
-  const st = data?.settings;
-  const seen = st?.pump_seen_at ? new Date(st.pump_seen_at).getTime() : 0;
-  // R-654: a computer that stopped checking in means nothing is going out, said as plainly as never on.
-  const stale = !!seen && Date.now() - seen > 10 * 60_000;
-  const pumpLine = !st ? "" : !seen
-    ? "No computer is sending these yet. Turn on Send from this computer in Cold calls settings."
-    : stale
-      ? `The computer that sends these last checked in ${ago(st.pump_seen_at)}. Emails wait until Ecliptr is open on it.`
-      : `Sending from ${st.send_from || "your email"}, ${st.hours}, up to ${st.daily_cap} a day.${data?.queue.line ? " " + data.queue.line : ""}${st.pump_note ? " " + st.pump_note : ""}`;
+  // R-671: ticks every warehouse shown, or clears them when all are ticked.
+  const allShownTicked = shown.length > 0 && shown.every((l) => ticked.has(l.id));
+  const someShownTicked = shown.some((l) => ticked.has(l.id));
+  const tickShown = () => setTicked((s) => {
+    const n = new Set(s);
+    if (allShownTicked) shown.forEach((l) => n.delete(l.id)); else shown.forEach((l) => n.add(l.id));
+    return n;
+  });
+  const headCheck = useRef<HTMLInputElement>(null);
+  useEffect(() => { if (headCheck.current) headCheck.current.indeterminate = someShownTicked && !allShownTicked; }, [someShownTicked, allShownTicked]);
 
   return (
     <div className="min-w-0">
@@ -212,10 +213,9 @@ export default function ColdCallsView() {
         <button className={ghost} onClick={() => setCompose({ ids: [], bump: true })}><Reply size={14} /> Bumps</button>
         <button className={ghost} onClick={() => setForm({})}><Plus size={14} /> Add</button>
         <button className={ghost} onClick={() => fileRef.current?.click()}><FileUp size={14} /> Import a sheet</button>
-        <button className={ghost} onClick={() => setSettingsOpen(true)}><Settings2 size={14} /> Settings</button>
+        <button className={ghost} onClick={() => setSettingsOpen(true)} aria-label="Cold calls settings"><Settings2 size={14} /> Settings</button>
         <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={(e) => { onFile(e.target.files?.[0]); e.target.value = ""; }} />
       </PageActions>
-      <p className="text-[13px] text-muted mb-5">Warehouses to call and email, kept apart from your clients and suppliers until one becomes a supplier.</p>
 
       {error && (
         <div className="mb-4 flex items-center justify-between gap-3 text-[13px] text-danger-ink bg-danger-bg rounded-lg px-3 py-2" role="alert">
@@ -227,81 +227,43 @@ export default function ColdCallsView() {
       {data && (
         <>
           {lists.length > 0 && (
-            <div className="flex gap-2.5 mb-4 overflow-x-auto pb-1">
+            <div className="flex gap-2.5 mb-4 overflow-x-auto p-px pb-1.5">
               <ListCard name="All lists" n={allLists} on={!pickedList} onPick={() => setList("")} />
               {lists.map((x) => (
                 <ListCard key={x.name} name={x.name} n={x} on={pickedList === x.name} onPick={() => setList(x.name)} onRename={() => setRenaming(x)} />
               ))}
             </div>
           )}
-          <div className="hsep" />
-          {/* R-654: where everyone on this list stands with the first email, one rule for every count. Click one to see those. */}
-          {(() => {
-            const tiles = MAIL.filter(([k]) => k !== "failed" || (mailCount.failed ?? 0) > 0 || filter === "failed");
-            const sub: Partial<Record<MailStage, string>> = {
-              waiting: `${data.settings.daily_cap} a day`,
-              sent: `${data.queue.sent_today} today`,
-              // R-643: who wrote back of those emailed, for the list picked (or every list).
-              replied: `${rate(shownList.replied, shownList.emailed)} response`,
-            };
-            return (
-              <div className="grid gap-x-5 py-4" style={{ gridTemplateColumns: Array(tiles.length + 1).fill("minmax(0,1fr)").join(" auto ") }}>
-                {tiles.map(([k, lb], i) => {
-                  const on = filter === k;
-                  const n = mailCount[k] ?? 0;
-                  return (
-                    <Fragment key={k}>
-                      {i > 0 && <div className="vsep" />}
-                      <button onClick={() => { setFilter(on ? "all" : k); setStatus(""); }} aria-pressed={on}
-                        className={`min-w-0 flex flex-col justify-start text-left rounded-lg -mx-2 px-2 py-1 transition-colors duration-150 ${on ? "bg-surface-2" : "hover:bg-surface-2"}`}>
-                        <div className={`ui-label truncate ${on ? "text-ink" : ""}`}>{lb}</div>
-                        <div className={`ui-fig mt-1 ${k === "failed" && n > 0 ? "text-danger-ink" : ""}`}>{n}</div>
-                        {sub[k] && <div className="text-[12px] text-muted tabular-nums truncate mt-0.5" title={sub[k]}>{sub[k]}</div>}
-                      </button>
-                    </Fragment>
-                  );
-                })}
-                <div className="vsep" />
-                {/* R-643: deals closed of every warehouse on the list. */}
-                <div className="min-w-0 py-1">
-                  <div className="ui-label truncate">Conversion rate</div>
-                  <div className={`ui-fig mt-1 ${(shownList.converted ?? 0) > 0 ? "text-success-ink" : ""}`}>{rate(shownList.converted ?? 0, shownList.total)}</div>
-                  <div className="text-[12px] text-muted tabular-nums truncate mt-0.5">{`${shownList.converted ?? 0} of ${shownList.total}, ${shownList.suppliers} ${shownList.suppliers === 1 ? "supplier" : "suppliers"}`}</div>
-                </div>
-              </div>
-            );
-          })()}
-          <div className="hsep mb-3" />
-          <p className={`text-[13px] mb-5 ${!seen || stale ? "text-warning-ink" : "text-muted"}`}>
-            {pumpLine}
-            {data.queue.failed > 0 && (
-              <button onClick={() => { setView("leads"); setFilter("failed"); setStatus(""); setQuery(""); }} className="ml-1 text-danger-ink font-medium underline underline-offset-2">
-                {data.queue.failed === 1 ? "1 failed to send" : `${data.queue.failed} failed to send`}. Show them
-              </button>
-            )}
-          </p>
+          <Overview leads={leads} count={mailCount} filter={filter} shownList={shownList} list={data}
+            onFilter={(k) => { setView("leads"); setFilter(filter === k ? "all" : k); setStatus(""); }} onSettings={() => setSettingsOpen(true)} />
 
-          <div className="mb-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 mt-7 mb-3">
             <Tabs label="Cold calls" value={view} onChange={(v) => setView(v as typeof view)}
               tabs={([["leads", "Warehouses", 0], ["map", "Map", 0], ["text", "To text", toText], ["replies", "Replies", data.replies_waiting ?? 0], ["overseas", "Overseas", 0]] as ["leads" | "map" | "text" | "replies" | "overseas", string, number][])
                 .map(([id, label, n]) => ({ id, label, count: n > 0 ? n : undefined }))} />
+            {view === "leads" && (
+              <label className="ui-search w-72 max-w-full">
+                <Search size={14} />
+                <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search company, city, email, phone" aria-label="Search warehouses" />
+              </label>
+            )}
           </div>
 
           {view === "overseas" ? <OverseasList leads={overseas} onOpen={setOpenId} onAdd={() => setForm({ kind: "overseas" })} />
           : view === "replies" ? <Replies settings={data.settings} onOpenLead={setOpenId} onChanged={load} onSettings={() => setSettingsOpen(true)} />
           : view === "map" ? <ColdCallsMap leads={leads} onOpen={setOpenId} />
           : view === "text" ? <TextList leads={leads} onOpen={setOpenId} onChanged={load} /> : <>
-          <div className="flex flex-wrap items-center gap-2 mb-3">
-            <label className="ui-search w-64 max-w-full">
-              <Search size={14} />
-              <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Company, city, email" aria-label="Search warehouses" />
-            </label>
+          <div className="flex flex-wrap items-center gap-2 mb-2">
             {chips.map(([k, l, n]) => (
-              <button key={k} onClick={() => setFilter(k)}
-                className={`ui-opt ${filter === k ? "on" : ""}`}>
+              <button key={k} onClick={() => setFilter(k)} className={`ui-opt ${filter === k ? "on" : ""}`}>
                 {l} <span className="tabular-nums opacity-60 ml-1">{n}</span>
               </button>
             ))}
+            {MAIL.some(([k]) => k === filter) && (
+              <button onClick={() => setFilter("all")} className="ui-opt on inline-flex items-center gap-1.5">
+                {MAIL.find(([k]) => k === filter)?.[1]} <span className="tabular-nums opacity-70">{mailCount[filter as MailStage] ?? 0}</span><X size={12} />
+              </button>
+            )}
             <select value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Status" className="ui-btn">
               <option value="">Any status</option>
               {STATUSES.filter((x) => statusCounts[x]).map((x) => <option key={x} value={x}>{STATUS_LABEL[x]} ({statusCounts[x]})</option>)}
@@ -312,58 +274,77 @@ export default function ColdCallsView() {
           </div>
 
           {leads.length === 0 ? (
-            <div className="py-16 text-center text-[13px] text-muted">No warehouses yet. Import a sheet or add one.</div>
+            <div className="py-20 text-center">
+              <div className="text-[15px] font-medium text-ink">No warehouses yet</div>
+              <p className="text-[13px] text-muted mt-1 mb-4">Import a sheet of warehouses, or add one by hand.</p>
+              <button className={solid} onClick={() => fileRef.current?.click()}><FileUp size={14} /> Import a sheet</button>
+            </div>
           ) : shown.length === 0 ? (
             <div className="py-16 text-center text-[13px] text-muted">{filter === "due" && !query && !status ? "Nothing is due today." : "No warehouses match."}</div>
           ) : (
-            <div className="divide-y divide-line border-t border-line">
-              {shown.map((l) => {
-                const place = [l.city, l.state].filter(Boolean).join(", ");
-                const next = nextLine(l.next_touch, data.today);
-                const said = saidLine(l.said);
-                const m = mailOf(l);
-                const [what, when] = mailLines(l);
-                const on = ticked.has(l.id);
-                return (
-                  <div key={l.id} className={`flex items-start gap-3 pl-3 transition-colors duration-150 min-w-0 ${on ? "bg-surface-2" : "hover:bg-surface-2"}`}>
-                    <input type="checkbox" checked={on} onChange={() => tick(l.id)} aria-label={`Select ${l.company}`}
-                      className="accent-ink w-4 h-4 mt-[18px] flex-shrink-0 cursor-pointer" />
-                    <button onClick={() => setOpenId(l.id)} className="flex-1 text-left flex items-start gap-4 pr-3 py-3.5 min-w-0">
-                      <div className="min-w-0 flex-1">
+            <table className="ui-table ui-table-click cc-table">
+              <thead>
+                <tr>
+                  <th className="w-10 !pl-3 !pr-0">
+                    <input ref={headCheck} type="checkbox" className="cc-check" checked={allShownTicked} onChange={tickShown}
+                      aria-label={allShownTicked ? "Clear the ones shown" : "Select every warehouse shown"} />
+                  </th>
+                  <th>Warehouse</th>
+                  <th className="hidden lg:table-cell">Phone</th>
+                  <th>First email</th>
+                  <th className="hidden xl:table-cell">Latest</th>
+                  <th className="r">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {shown.map((l) => {
+                  const place = [l.city, l.state].filter(Boolean).join(", ");
+                  const next = nextLine(l.next_touch, data.today);
+                  const said = saidLine(l.said);
+                  const m = mailOf(l);
+                  const [what, when] = mailLines(l);
+                  const on = ticked.has(l.id);
+                  return (
+                    <tr key={l.id} aria-selected={on} onClick={() => setOpenId(l.id)}>
+                      <td className="w-10 !pl-3 !pr-0" onClick={(e) => e.stopPropagation()}>
+                        <input type="checkbox" className="cc-check" checked={on} onChange={() => tick(l.id)} aria-label={`Select ${l.company}`} />
+                      </td>
+                      <td className="max-w-0 w-[38%]">
                         <div className="text-[14px] font-medium text-ink truncate">{l.company}</div>
                         <div className="text-[12.5px] text-muted truncate">
                           {[place, KIND_LABEL[l.kind] ?? ""].filter(Boolean).join(" · ") || "No place yet"}
-                          {/* The 216px sidebar takes a step off every breakpoint: below xl the email column rides here. */}
-                          <span className={`xl:hidden ${MAIL_TONE[m]}`}> · {[what, when].filter(Boolean).join(", ")}</span>
-                          {next && <span className={l.due ? "text-accent-hover font-medium" : ""}> · {next}</span>}
-                          {l.queued && m !== "waiting" ? <span> · {l.queued} to send</span> : null}
+                          <span className="lg:hidden">{l.phone ? ` · ${l.phone_shown || l.phone}` : ""}</span>
                         </div>
-                        {said && <div className={`text-[13px] mt-1 line-clamp-1 ${l.said?.kind === "reply" ? "text-ink" : "text-ink-2"}`}>{said}</div>}
-                        {(l.failed ?? 0) > 0 && <div className="text-[12.5px] mt-1 line-clamp-2 text-danger-ink">Failed: {l.failed_error || "open it to try again"}</div>}
-                      </div>
-                      <div className="w-[150px] flex-shrink-0 pt-0.5">
-                        <div className={`text-[14px] tabular-nums truncate ${l.phone ? "text-ink" : "text-muted"}`}>{l.phone_shown || l.phone || "No phone"}</div>
-                        {l.texted && <div className="text-[12px] text-success-ink truncate">Texted {agoDay(l.texted.at)}</div>}
-                      </div>
-                      {/* R-654: where it stands with the first email, then the day it goes, went, or why it was left out. */}
-                      <div className="hidden xl:block w-[170px] flex-shrink-0 pt-0.5 min-w-0">
-                        <div className={`text-[13px] truncate ${MAIL_TONE[m]}`}>{what}</div>
-                        {when && <div className="text-[12px] text-muted truncate" title={when}>{when}</div>}
-                      </div>
-                      <div className="flex-shrink-0 flex justify-end pt-0.5"><Pill s={l.status} /></div>
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
+                      </td>
+                      <td className="hidden lg:table-cell whitespace-nowrap">
+                        <div className={`text-[13.5px] tabular-nums ${l.phone ? "text-ink" : "text-faint"}`}>{l.phone_shown || l.phone || "No phone"}</div>
+                        {l.texted && <div className="text-[12px] text-success-ink">Texted {agoDay(l.texted.at)}</div>}
+                      </td>
+                      <td className="max-w-0 w-[22%]">
+                        <div className={`text-[13.5px] font-medium truncate ${MAIL_TONE[m]}`}>{what}</div>
+                        <div className="text-[12px] text-muted truncate" title={m === "failed" ? l.failed_error : when}>
+                          {m === "failed" ? (l.failed_error || when) : when}{l.queued && m !== "waiting" ? `${when ? ", " : ""}${l.queued} to send` : ""}
+                        </div>
+                      </td>
+                      <td className="hidden xl:table-cell max-w-0 w-[26%]">
+                        {said ? <div className={`text-[13px] truncate ${l.said?.kind === "reply" ? "text-ink" : "text-ink-2"}`} title={said}>{said}</div>
+                          : <div className="text-[13px] text-faint">Nothing yet</div>}
+                        {next && <div className={`text-[12px] truncate ${l.due ? "text-accent-hover font-medium" : "text-muted"}`}>{next}</div>}
+                      </td>
+                      <td className="r"><Pill s={l.status} /></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           )}
-          {/* R-654: what to do with the ticked ones, kept in view while scrolling. */}
+          {/* R-654/R-671: what to do with the ticked ones, floating in ink while scrolling. */}
           {picked.length > 0 && (
-            <div className="sticky bottom-3 z-10 mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-line bg-surface px-3.5 py-2.5 shadow-lg">
-              <span className="text-[13.5px] font-medium text-ink tabular-nums mr-auto">{picked.length} selected</span>
-              <button className={ghost} onClick={() => setTicked(new Set())}>Clear</button>
-              <button className={ghost} onClick={writePicked}><Pencil size={14} /> Edit before sending</button>
-              <button className={solid} onClick={queuePicked} disabled={busy}><Mail size={14} /> Queue {picked.length === 1 ? "1 email" : `${picked.length} emails`}</button>
+            <div className="cc-bulk" role="toolbar" aria-label="Selected warehouses">
+              <span className="text-[13px] font-medium tabular-nums pr-2">{picked.length} selected</span>
+              <button onClick={() => setTicked(new Set())}>Clear</button>
+              <button onClick={writePicked}><Pencil size={13} /> Edit before sending</button>
+              <button className="go" onClick={queuePicked} disabled={busy}><Mail size={13} /> Queue {picked.length === 1 ? "1 email" : `${picked.length} emails`}</button>
             </div>
           )}
           </>}
@@ -421,40 +402,159 @@ function agoDay(iso: string): string {
   return t.toDateString() === new Date().toDateString() ? "today" : t.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
-/** R-581: one imported list at the top: its name, how many, and how far it got. */
+/** R-581/R-671: one imported list: its name, how many of it were emailed, a meter of how far it got (replied green,
+ *  emailed ink, waiting blue) and, R-643, its response rate and the suppliers it became. */
 function ListCard({ name, n, on, onPick, onRename }: { name: string; n: LeadListName; on: boolean; onPick: () => void; onRename?: () => void }) {
-  const pct = (k: number) => (n.total ? Math.round((k / n.total) * 100) : 0);
+  const pct = (k: number) => (n.total ? (k / n.total) * 100 : 0);
   return (
-    <div className={`relative flex-shrink-0 w-[220px] rounded-xl border px-3.5 py-3 transition-colors duration-150 ${on ? "border-ink" : "border-line hover:bg-surface-2"}`}>
-      <button onClick={onPick} className="absolute inset-0 rounded-xl" aria-label={`Show ${name}`} />
-      <div className="flex items-start justify-between gap-2">
-        <div className="text-[13.5px] font-medium text-ink truncate pr-1" title={name}>{name}</div>
+    <div className={`cc-list ${on ? "on" : ""}`}>
+      <button onClick={onPick} className="absolute inset-0 rounded-xl" aria-pressed={on} aria-label={`Show ${name}`} />
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-[13px] font-medium text-ink truncate" title={name}>{name}</div>
         {onRename && (
-          <button onClick={onRename} className="relative p-1 -m-1 rounded text-muted hover:text-ink hover:bg-surface-2" aria-label={`Rename ${name}`}><Pencil size={12} /></button>
+          <button onClick={onRename} className="relative p-1 -m-1 rounded text-faint hover:text-ink hover:bg-surface-3" aria-label={`Rename ${name}`}><Pencil size={12} /></button>
         )}
       </div>
-      <div className="text-[12px] text-muted tabular-nums">{n.total === 1 ? "1 warehouse" : `${n.total} warehouses`}</div>
-      <div className="mt-2 h-1.5 rounded-full bg-surface-3 overflow-hidden flex">
-        <div className="bg-ink" style={{ width: `${pct(n.replied)}%` }} />
-        <div className="bg-muted" style={{ width: `${Math.max(0, pct(n.emailed) - pct(n.replied))}%` }} />
+      <div className="mt-1.5 flex items-baseline gap-1.5 tabular-nums">
+        <span className="text-[20px] font-medium tracking-[-0.4px] text-ink leading-7">{n.emailed}</span>
+        <span className="text-[12px] text-muted">of {n.total} emailed</span>
       </div>
-      <div className="mt-1.5 text-[12px] text-ink-2 tabular-nums truncate">
-        {n.emailed} of {n.total} emailed, {n.replied} replied{n.texted ? `, ${n.texted} texted` : ""}
+      <div className="cc-meter !mt-2 !h-1">
+        <i className="bg-success" style={{ width: `${pct(n.replied)}%` }} />
+        <i className="bg-ink" style={{ width: `${Math.max(0, pct(n.emailed) - pct(n.replied))}%` }} />
+        <i className="bg-step-now" style={{ width: `${pct(n.waiting ?? 0)}%` }} />
       </div>
-      {/* R-643: response rate, then how many became suppliers and how many converted (a deal closed). */}
-      <div className="text-[12px] text-muted tabular-nums truncate">{n.emailed ? `${rate(n.replied, n.emailed)} response` : "No emails yet"}</div>
-      {n.suppliers ? (
-        <div className="text-[12px] text-muted tabular-nums truncate">
-          {n.suppliers} {n.suppliers === 1 ? "supplier" : "suppliers"}
-          {n.converted ? <span className="text-success-ink font-medium">, {n.converted} converted</span> : null}
+      <div className="mt-2 text-[12px] text-muted tabular-nums truncate">
+        {n.emailed ? `${rate(n.replied, n.emailed)} response` : "No emails yet"}
+        {n.suppliers ? `, ${n.suppliers} ${n.suppliers === 1 ? "supplier" : "suppliers"}` : ""}
+        {n.converted ? <span className="text-success-ink font-medium">, {n.converted} converted</span> : null}
+      </div>
+    </div>
+  );
+}
+
+/** R-671: where everyone on the list stands with the first email, as one flow you can click (each stage with
+ *  its share of the list), what sits outside it, and beside it the days the waiting emails go out. */
+function Overview({ leads, count, filter, shownList, list, onFilter, onSettings }: {
+  leads: Lead[]; count: Partial<Record<MailStage, number>>; filter: string; shownList: LeadListName; list: LeadList;
+  onFilter: (k: MailStage) => void; onSettings: () => void;
+}) {
+  const total = leads.length;
+  const emailed = (count.sent ?? 0) + (count.replied ?? 0);
+  const shown = useCountUp(emailed) ?? emailed;
+  const st = list.settings;
+  const sub: Partial<Record<MailStage, string>> = {
+    not_emailed: count.not_emailed ? "Ready to queue" : "None left",
+    waiting: `${st.daily_cap} a day, weekdays`,
+    sent: `${list.queue.sent_today} today`,
+    // R-643: who wrote back of those emailed, for the list picked (or every list).
+    replied: `${rate(shownList.replied, shownList.emailed)} response`,
+  };
+  const FILL: Record<MailStage, string> = {
+    not_emailed: "bg-faint", waiting: "bg-step-now", sent: "bg-ink", replied: "bg-success", failed: "bg-danger", left_out: "bg-line-3",
+  };
+  const flow: MailStage[] = ["not_emailed", "waiting", "sent", "replied"];
+  const label = (k: MailStage) => MAIL.find(([m]) => m === k)?.[1] ?? k;
+  return (
+    <div className="cc-panel grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_340px] gap-y-5 p-5">
+      <div className="min-w-0 flex flex-col">
+        <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 px-1">
+          <h2 className="m-0 text-[20px] font-medium tracking-[-0.4px] text-ink tabular-nums">
+            {Math.round(shown)} of {total} emailed
+            <span className="text-muted font-normal text-[15px] tracking-normal"> {total ? `${Math.round((emailed / total) * 100)}%` : ""}</span>
+          </h2>
+          <div className="flex items-center gap-4 text-[12.5px] text-muted tabular-nums">
+            {(count.failed ?? 0) > 0 && (
+              <button className={`ui-link !text-[12.5px] !text-danger-ink ${filter === "failed" ? "" : "!no-underline"}`} onClick={() => onFilter("failed")}>
+                {count.failed} failed to send
+              </button>
+            )}
+            <button className={`ui-link muted !text-[12.5px] ${filter === "left_out" ? "!text-ink" : "!no-underline"}`} onClick={() => onFilter("left_out")}>
+              {count.left_out ?? 0} left out
+            </button>
+            {/* R-643: deals closed of every warehouse on the list. */}
+            <span>
+              Conversion <span className={(shownList.converted ?? 0) > 0 ? "text-success-ink font-medium" : "text-ink"}>{rate(shownList.converted ?? 0, shownList.total)}</span>
+            </span>
+          </div>
         </div>
-      ) : null}
-      {(n.waiting || n.failed || n.not_emailed) ? (
-        <div className="text-[12px] text-muted tabular-nums truncate">
-          {[n.not_emailed ? `${n.not_emailed} not emailed` : "", n.waiting ? `${n.waiting} waiting` : ""].filter(Boolean).join(", ")}
-          {n.failed ? <span className="text-danger-ink">{n.not_emailed || n.waiting ? ", " : ""}{n.failed} failed</span> : null}
+        {/* The whole list in one bar, furthest along first. */}
+        <div className="cc-meter !h-2.5 mx-1 !mt-3.5" role="img"
+          aria-label={MAIL.map(([k, l]) => `${l} ${count[k] ?? 0}`).join(", ")}>
+          {(["replied", "sent", "waiting", "failed", "not_emailed", "left_out"] as MailStage[]).filter((k) => (count[k] ?? 0) > 0).map((k) => (
+            <i key={k} className={FILL[k]} title={`${label(k)}: ${count[k]}`} style={{ width: `${((count[k] ?? 0) / Math.max(1, total)) * 100}%` }} />
+          ))}
         </div>
-      ) : null}
+        <div className="mt-auto pt-4 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)_auto_minmax(0,1fr)_auto_minmax(0,1fr)] items-stretch">
+          {flow.map((k, i) => (
+            <Fragment key={k}>
+              {i > 0 && <ChevronRight size={16} className="cc-chev" aria-hidden />}
+              <button className="cc-stage" aria-pressed={filter === k} onClick={() => onFilter(k)}>
+                <span className="ui-label truncate">{label(k)}</span>
+                <CountUp className="cc-stage-n" n={count[k] ?? 0} />
+                <span className="text-[12px] text-muted truncate tabular-nums">{sub[k]}</span>
+                <span className="cc-meter"><i className={FILL[k]} style={{ width: `${total ? Math.max((count[k] ?? 0) > 0 ? 2 : 0, ((count[k] ?? 0) / total) * 100) : 0}%` }} /></span>
+              </button>
+            </Fragment>
+          ))}
+        </div>
+      </div>
+      <RollingOut leads={leads} list={list} onSettings={onSettings} />
+    </div>
+  );
+}
+
+function CountUp({ n, className }: { n: number; className?: string }) {
+  const v = useCountUp(n) ?? n;
+  return <span className={className}>{Math.round(v).toLocaleString("en-US")}</span>;
+}
+
+/** R-671: the emails rolling out. Whether a computer is sending, then one bar a day for the waiting first emails. */
+function RollingOut({ leads, list, onSettings }: { leads: Lead[]; list: LeadList; onSettings: () => void }) {
+  const st = list.settings;
+  const seen = st.pump_seen_at ? new Date(st.pump_seen_at).getTime() : 0;
+  const stale = !!seen && Date.now() - seen > 10 * 60_000;
+  const days = rollout(leads);
+  const shown = days.slice(0, 6);
+  const later = days.slice(6).reduce((s, d) => s + d.n, 0);
+  const top = Math.max(st.daily_cap || 1, ...shown.map((d) => d.n));
+  const off = !seen || stale;
+  return (
+    <div className="min-w-0 border-t border-line pt-4 xl:border-t-0 xl:pt-1 xl:pl-[22px] xl:shadow-[inset_1px_0_0_rgb(var(--c-line))]">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-[14px] font-medium text-ink">Rolling out</div>
+          <div className={`text-[12.5px] mt-0.5 leading-snug ${off ? "text-warning-ink" : "text-muted"}`}>
+            {!seen ? "Nothing goes out until a computer sends them. Turn on Send from this computer in Settings."
+              : stale ? `Paused: the sending computer last checked in ${ago(st.pump_seen_at)}. Open Ecliptr on it.`
+              : `From ${st.send_from || "your email"}.${list.queue.line ? " " + list.queue.line : ""}${st.pump_note ? " " + st.pump_note : ""}`}
+          </div>
+        </div>
+        {off ? <button className="ui-link !text-[12.5px] flex-shrink-0" onClick={onSettings}>Settings</button>
+          : <Send size={15} className="text-step-now flex-shrink-0 mt-0.5" aria-hidden />}
+      </div>
+      {shown.length === 0 ? (
+        <div className="cc-days !items-center justify-center rounded-xl bg-surface-2 text-[12.5px] text-muted text-center px-4">
+          Nothing waiting. Select warehouses below and queue them.
+        </div>
+      ) : (
+        <div className="cc-days" role="img" aria-label={days.map((d) => `${d.day} ${d.date}: ${d.n}`).join(", ")}>
+          {shown.map((d) => (
+            <div key={d.date} className="cc-day" title={`${d.n} on ${d.day === "Today" || d.day === "Tomorrow" ? d.day.toLowerCase() : d.day}, ${d.date}`}>
+              <span className="cc-day-n">{d.n}</span>
+              <span className="cc-day-bar" style={{ height: `${Math.max(6, (d.n / top) * 64)}px`, opacity: off ? 0.45 : 1 }} />
+              <span className="cc-day-l"><b>{d.day}</b>{d.date}</span>
+            </div>
+          ))}
+          {later > 0 && (
+            <div className="cc-day">
+              <span className="cc-day-n">{later}</span>
+              <span className="cc-day-bar !bg-line-3" style={{ height: "6px" }} />
+              <span className="cc-day-l"><b>Later</b>after {shown[shown.length - 1].date}</span>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
