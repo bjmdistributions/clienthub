@@ -253,6 +253,53 @@ fn differing(b: &BankTxn, l: &LedgerTxn) -> Vec<&'static str> {
 pub fn compare(bank: &[BankTxn], ledger: &[LedgerTxn], removed: &std::collections::HashSet<String>,
                fed_pas: &std::collections::HashSet<String>) -> (Vec<Finding>, Vec<AccountTally>)
 {
+    let p = compare_paired(bank, ledger, removed, fed_pas);
+    (p.findings, p.tallies)
+}
+
+/// R-670: the comparison, with what it proved kept. `stands` is every ledger row that stands for one of the bank's
+/// posted transactions (each bank transaction is held to one row, so two rows that both stand are two payments).
+/// `since` is, per checked account, the first day of the bank's history for it.
+pub struct Paired {
+    pub findings: Vec<Finding>,
+    pub tallies: Vec<AccountTally>,
+    pub stands: std::collections::HashSet<String>,
+    pub since: std::collections::HashMap<String, String>,
+}
+
+/// R-670 (Jack: "tracking duplicates the best and most effiecient way polssible by actually looking what has been
+/// posted by the bank"): what the bank's own list says about two ledger rows that look alike.
+#[derive(Debug, PartialEq)]
+pub enum LookAlike {
+    /// Both stand for a posted transaction of their own: two payments, nothing to ask.
+    TwoPayments,
+    /// The bank lists one payment where the books hold two rows: `extra` is the copy.
+    Copy { keep: String, extra: String },
+    /// The bank's list cannot say (a pending or withdrawn row, an account or a day it did not read).
+    Unknown,
+}
+
+pub fn look_alike(a: &LedgerTxn, b: &LedgerTxn, p: &Paired) -> LookAlike {
+    if a.pending || a.retracted || b.pending || b.retracted { return LookAlike::Unknown; }
+    let read = |l: &LedgerTxn| p.since.get(&l.account).is_some_and(|d| l.date.get(..10).unwrap_or("") >= d.get(..10).unwrap_or(""));
+    match (p.stands.contains(&a.id), p.stands.contains(&b.id)) {
+        (true, true) => LookAlike::TwoPayments,
+        (true, false) if read(b) => LookAlike::Copy { keep: a.id.clone(), extra: b.id.clone() },
+        (false, true) if read(a) => LookAlike::Copy { keep: b.id.clone(), extra: a.id.clone() },
+        _ => LookAlike::Unknown,
+    }
+}
+
+/// R-670: whether the rows the bank does not list on one account may be removed without asking. A few are what a
+/// bank does (a charge reissued under a new id); many at once means the bank's list came back short, and the books
+/// are never cut down to a short list.
+pub fn removal_trusted(not_at_bank: usize, posted: usize) -> bool {
+    not_at_bank <= std::cmp::max(3, posted / 50)
+}
+
+pub fn compare_paired(bank: &[BankTxn], ledger: &[LedgerTxn], removed: &std::collections::HashSet<String>,
+                      fed_pas: &std::collections::HashSet<String>) -> Paired
+{
     let mut taken = vec![false; ledger.len()];
     let mut pair: Vec<Option<usize>> = vec![None; bank.len()];
     let by_id: std::collections::HashMap<&str, usize> = ledger.iter().enumerate().map(|(i, l)| (l.id.as_str(), i)).collect();
@@ -316,7 +363,9 @@ pub fn compare(bank: &[BankTxn], ledger: &[LedgerTxn], removed: &std::collection
         if let Some(t) = tallies.get_mut(&l.account) { t.not_exact += 1; }
         findings.push(Finding::NotAtBank { ledger: li });
     }
-    (findings, tallies.into_values().collect())
+    let stands = ledger.iter().enumerate().filter(|(li, _)| taken[*li]).map(|(_, l)| l.id.clone()).collect();
+    let since = earliest.iter().map(|(a, d)| (a.to_string(), d.to_string())).collect();
+    Paired { findings, tallies: tallies.into_values().collect(), stands, since }
 }
 
 #[cfg(test)]
@@ -333,6 +382,41 @@ mod tests {
     fn fed() -> std::collections::HashSet<String> { ["link1".to_string()].into_iter().collect() }
     fn cmp(bank: &[BankTxn], ledger: &[LedgerTxn], removed: &std::collections::HashSet<String>) -> (Vec<Finding>, Vec<AccountTally>) {
         compare(bank, ledger, removed, &fed())
+    }
+
+    #[test]
+    fn r670_the_banks_list_settles_rows_that_look_alike() {
+        // The bank lists two payments of 80 two days apart and one of 45; the books hold the two 80s, the 45 from
+        // the feed, and the 45 again from an imported statement.
+        let bank = vec![b("btpl_a", "2026-10-01", 80.0, "FUEL STOP"), b("btpl_b", "2026-10-03", 80.0, "FUEL STOP"), b("btpl_c", "2026-10-05", 45.0, "BOX CO")];
+        let ledger = vec![
+            l("btpl_a", "2026-10-01", 80.0, "FUEL STOP", "plaid"), l("btpl_b", "2026-10-03", 80.0, "FUEL STOP", "plaid"),
+            l("btpl_c", "2026-10-05", 45.0, "BOX CO", "plaid"), l("stmt_c", "2026-10-06", 45.0, "BOX COMPANY 0042", "pdf"),
+            LedgerTxn { pending: true, ..l("btpl_p", "2026-10-06", 45.0, "BOX CO", "plaid") },
+            l("old", "2026-09-01", 45.0, "BOX CO", "pdf"),
+        ];
+        let p = compare_paired(&bank, &ledger, &none(), &fed());
+        assert!(p.findings.is_empty());
+        // Two rows that each stand for a posted transaction are two payments.
+        assert_eq!(look_alike(&ledger[0], &ledger[1], &p), LookAlike::TwoPayments);
+        // One payment at the bank, two rows in the books: the row that stands for nothing is the copy, either way round.
+        assert_eq!(look_alike(&ledger[2], &ledger[3], &p), LookAlike::Copy { keep: "btpl_c".into(), extra: "stmt_c".into() });
+        assert_eq!(look_alike(&ledger[3], &ledger[2], &p), LookAlike::Copy { keep: "btpl_c".into(), extra: "stmt_c".into() });
+        // A pending row, or a row from before the bank's history, is not judged.
+        assert_eq!(look_alike(&ledger[2], &ledger[4], &p), LookAlike::Unknown);
+        assert_eq!(look_alike(&ledger[2], &ledger[5], &p), LookAlike::Unknown);
+        // Neither stands: nothing is known.
+        assert_eq!(look_alike(&ledger[3], &ledger[5], &p), LookAlike::Unknown);
+    }
+
+    #[test]
+    fn r670_many_rows_missing_from_the_banks_list_are_never_removed_unasked() {
+        assert!(removal_trusted(1, 40));
+        assert!(removal_trusted(3, 40));
+        assert!(!removal_trusted(4, 40));
+        assert!(removal_trusted(10, 500));
+        assert!(!removal_trusted(11, 500));
+        assert!(removal_trusted(0, 0));
     }
 
     #[test]

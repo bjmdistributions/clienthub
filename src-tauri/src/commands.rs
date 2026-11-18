@@ -19045,6 +19045,22 @@ fn retire_near_duplicate(
     settle_carry(conn, extra_id, keep_id, src, &dir, now, reason, over, touched)
 }
 
+/// Two rows that look alike are two payments: each remembers the other (`raw_json.nd`) and the pair is never asked
+/// about again. A person's answer, or (R-670) the bank's own list when both rows stand for a posted transaction.
+fn mark_two_payments(conn: &rusqlite::Connection, a_id: &str, b_id: &str, now: &str) -> Result<(), String> {
+    for (a, b) in [(a_id, b_id), (b_id, a_id)] {
+        let raw: String = conn.query_row("SELECT COALESCE(raw_json,'') FROM bank_txn WHERE id=?1", [a], |r| r.get(0))
+            .map_err(|_| "That transaction is no longer in the ledger.".to_string())?;
+        let rj = crate::bank_near_dup::with_not_dup(&raw, b);
+        let mut c = Map::new();
+        c.insert("raw_json".into(), Value::String(rj.clone()));
+        c.insert("updated_at".into(), Value::String(now.to_string()));
+        sync::record_upsert("bank_txn", a, c).map_err(|e| e.to_string())?;
+        conn.execute("UPDATE bank_txn SET raw_json=?1, updated_at=?2 WHERE id=?3", rusqlite::params![rj, now, a]).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// R-456: a person's answer on a likely duplicate. `same`: retire the extra copy onto the kept
 /// one (see `retire_near_duplicate`). Not the same: both rows remember the other
 /// (`raw_json.nd`) and the pair is never asked about again.
@@ -19053,16 +19069,7 @@ pub async fn resolve_near_duplicate(keep_id: String, extra_id: String, same: boo
     let now = Utc::now().to_rfc3339();
     if !same {
         let conn = pool().get().map_err(|e| e.to_string())?;
-        for (a, b) in [(&keep_id, &extra_id), (&extra_id, &keep_id)] {
-            let raw: String = conn.query_row("SELECT COALESCE(raw_json,'') FROM bank_txn WHERE id=?1", [a], |r| r.get(0))
-                .map_err(|_| "That transaction is no longer in the ledger.".to_string())?;
-            let rj = crate::bank_near_dup::with_not_dup(&raw, b);
-            let mut c = Map::new();
-            c.insert("raw_json".into(), Value::String(rj.clone()));
-            c.insert("updated_at".into(), Value::String(now.clone()));
-            sync::record_upsert("bank_txn", a, c).map_err(|e| e.to_string())?;
-            conn.execute("UPDATE bank_txn SET raw_json=?1, updated_at=?2 WHERE id=?3", rusqlite::params![rj, now, a]).map_err(|e| e.to_string())?;
-        }
+        mark_two_payments(&conn, &keep_id, &extra_id, &now)?;
         crate::netsync::push_now();
         return Ok(json!({ "kept_both": true }));
     }
@@ -21598,6 +21605,12 @@ pub async fn delete_bank_txns(ids: Vec<String>, unlink: Option<bool>) -> Result<
     if !crate::employees::session_is_privileged() {
         return Err("Only an admin can delete transactions.".into());
     }
+    delete_bank_txns_inner(ids, unlink, "manual").await
+}
+
+/// The delete itself. `reason` is written on each backup row ("manual" for a person's delete; R-670: "not_at_bank"
+/// when Check against bank removes a row the bank does not list).
+async fn delete_bank_txns_inner(ids: Vec<String>, unlink: Option<bool>, reason: &str) -> Result<Value, String> {
     if ids.is_empty() {
         return Ok(json!({ "deleted": 0, "skipped_booked": 0, "needs_unlink": [] }));
     }
@@ -21646,8 +21659,8 @@ pub async fn delete_bank_txns(ids: Vec<String>, unlink: Option<bool>) -> Result<
         let rj: String = conn.query_row(BANK_TXN_BACKUP_SQL, [id], |r| r.get(0))
             .map_err(|e| format!("Nothing was changed: could not back the row up ({e})"))?;
         conn.execute(
-            "INSERT OR REPLACE INTO bank_txn_deleted_backup (id, row_json, survivor_id, reason, deleted_at) VALUES (?1,?2,'','manual',?3)",
-            rusqlite::params![id, rj, now])
+            "INSERT OR REPLACE INTO bank_txn_deleted_backup (id, row_json, survivor_id, reason, deleted_at) VALUES (?1,?2,'',?4,?3)",
+            rusqlite::params![id, rj, now, reason])
             .map_err(|e| format!("Nothing was changed: could not back the row up ({e})"))?;
         for (aid, deal, _) in &allocs {
             // Invariant 4: oplog first, so the link does not come back on the next pull.
@@ -23534,7 +23547,51 @@ pub async fn check_against_bank() -> Result<Value, String> {
 /// `import_missing`: after a takeover, import at once what the bank holds and the ledger lacks (each through
 /// Import's own guard, so nothing already on the books comes in twice). Payments posted while the other computer
 /// was silent were skipped by this computer's standby link, so this is the only way they arrive without a click.
-async fn check_against_bank_run(import_missing: bool) -> Result<Value, String> {
+/// Every ledger row as Check against bank reads it.
+fn check_ledger_rows(conn: &rusqlite::Connection) -> Result<Vec<crate::bank_declined::LedgerTxn>, String> {
+    let sql = format!(
+        "SELECT b.id, COALESCE(b.account_id,''), COALESCE(b.posted_at,''), COALESCE(b.amount,0), COALESCE(b.direction,''), \
+                COALESCE(NULLIF(b.memo_raw,''), b.description, ''), COALESCE(b.source_format,''), {}, {}, \
+                CASE WHEN json_valid(b.raw_json) THEN COALESCE(json_extract(b.raw_json,'$.pa'),'') ELSE '' END FROM bank_txn b",
+        crate::bank_flags::pending("b"), crate::bank_flags::retracted("b"));
+    let mut st = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = st.query_map([], |r| Ok(crate::bank_declined::LedgerTxn {
+        id: r.get(0)?, account: r.get(1)?, date: r.get(2)?, amount: r.get(3)?, direction: r.get(4)?, memo: r.get(5)?,
+        source: r.get(6)?, pending: r.get::<_, i64>(7)? != 0, retracted: r.get::<_, i64>(8)? != 0, pa: r.get(9)?,
+    })).map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Fold each ledger label onto the bank's label for the same account (a rename, an alias).
+fn fold_check_ledger(mut v: Vec<crate::bank_declined::LedgerTxn>, bank_labels: &std::collections::BTreeSet<String>,
+                     live: &std::collections::HashSet<String>, aliases: &std::collections::HashMap<String, String>)
+    -> Vec<crate::bank_declined::LedgerTxn>
+{
+    let mut fold: std::collections::HashMap<String, String> = Default::default();
+    for l in v.iter_mut() {
+        let to = fold.entry(l.account.clone()).or_insert_with(|| bank_labels.iter()
+            .find(|bl| crate::bank_dedup::same_account(&l.account, bl, live, aliases)).cloned()
+            .unwrap_or_else(|| l.account.clone())).clone();
+        l.account = to;
+    }
+    v
+}
+
+/// R-670 (Jack, 2026-11-18: "when i check againsta the bank, i want it to automatically make my books right and leave
+/// un booked the transactions that may have been missed, auto swap booked pending transactions"): the bank's posted
+/// list is the truth, so the check answers its own findings where the answer is not a judgement:
+/// - a posted transaction the books lack comes in, unbooked (through Import's guard, never one he removed himself);
+/// - a row whose date, amount or text is not the bank's takes the bank's (the booking stays; refused when more is
+///   booked against it than the bank's amount);
+/// - a feed row the bank does not list, found missing in an earlier check as well, with no deal or record tied to
+///   it, is removed (backed up), unless so many are missing on the account that the bank's list looks short;
+/// - a booking on a row the bank took back moves to the one unbooked posted transaction that can be it;
+/// - two rows that look alike are two payments when each stands for a posted transaction of its own, and one is a
+///   copy when the bank lists a single payment (the copy hands over its booking and goes, backed up);
+/// - an account whose every posted transaction is then in the books exactly, with nothing extra, agrees: its books
+///   check starts from these figures.
+/// What is left open is for a person. `_import_missing` is no longer read: every run brings in what is missing.
+async fn check_against_bank_run(_import_missing: bool) -> Result<Value, String> {
     let _gate = plaid_gate().lock().await;
     // R-590: never on a ledger that a restore is rewriting.
     let (idle, restores_before) = crate::netsync::restore_marker();
@@ -23562,17 +23619,7 @@ async fn check_against_bank_run(import_missing: bool) -> Result<Value, String> {
     // run judges one ledger. A restore that starts meanwhile voids the run.
     let ledger_raw: Vec<crate::bank_declined::LedgerTxn> = {
         let conn = pool().get().map_err(|e| e.to_string())?;
-        let sql = format!(
-            "SELECT b.id, COALESCE(b.account_id,''), COALESCE(b.posted_at,''), COALESCE(b.amount,0), COALESCE(b.direction,''), \
-                    COALESCE(NULLIF(b.memo_raw,''), b.description, ''), COALESCE(b.source_format,''), {}, {}, \
-                    CASE WHEN json_valid(b.raw_json) THEN COALESCE(json_extract(b.raw_json,'$.pa'),'') ELSE '' END FROM bank_txn b",
-            crate::bank_flags::pending("b"), crate::bank_flags::retracted("b"));
-        let mut st = conn.prepare(&sql).map_err(|e| e.to_string())?;
-        let rows = st.query_map([], |r| Ok(crate::bank_declined::LedgerTxn {
-            id: r.get(0)?, account: r.get(1)?, date: r.get(2)?, amount: r.get(3)?, direction: r.get(4)?, memo: r.get(5)?,
-            source: r.get(6)?, pending: r.get::<_, i64>(7)? != 0, retracted: r.get::<_, i64>(8)? != 0, pa: r.get(9)?,
-        })).map_err(|e| e.to_string())?;
-        rows.filter_map(|r| r.ok()).collect()
+        check_ledger_rows(&conn)?
     };
     let (bank, errors, live, fed_pas) = bank_posted_history(&aliases, &fed).await?;
     if crate::netsync::restore_marker() != (true, restores_before) {
@@ -23587,18 +23634,7 @@ async fn check_against_bank_run(import_missing: bool) -> Result<Value, String> {
     let now = Utc::now().to_rfc3339();
     let conn = pool().get().map_err(|e| e.to_string())?;
     let bank_labels: std::collections::BTreeSet<String> = bank.iter().map(|b| b.account.clone()).collect();
-    let ledger: Vec<crate::bank_declined::LedgerTxn> = {
-        let mut v = ledger_raw;
-        // Fold each ledger label onto the bank's label for the same account (a rename, an alias).
-        let mut fold: std::collections::HashMap<String, String> = Default::default();
-        for l in v.iter_mut() {
-            let to = fold.entry(l.account.clone()).or_insert_with(|| bank_labels.iter()
-                .find(|bl| crate::bank_dedup::same_account(&l.account, bl, &live, &aliases)).cloned()
-                .unwrap_or_else(|| l.account.clone())).clone();
-            l.account = to;
-        }
-        v
-    };
+    let ledger = fold_check_ledger(ledger_raw, &bank_labels, &live, &aliases);
     let held: std::collections::HashSet<&str> = ledger.iter().map(|l| l.id.as_str()).collect();
     let removed: std::collections::HashSet<String> = bank.iter()
         .filter(|b| !held.contains(b.id.as_str()) && sync::is_tombstoned("bank_txn", &b.id))
@@ -23608,6 +23644,8 @@ async fn check_against_bank_run(import_missing: bool) -> Result<Value, String> {
     use crate::bank_declined::{Decline, Finding};
     let mut found: std::collections::HashSet<String> = Default::default();
     let (mut missing, mut differs, mut not_at_bank, mut new_rows) = (0usize, 0usize, 0usize, 0usize);
+    // R-670: findings this check is the first to make (a row is removed only when an earlier check made it too).
+    let mut fresh: std::collections::HashSet<String> = Default::default();
     for f in &findings {
         let d = match f {
             Finding::Missing { bank: bi, removed_before } => {
@@ -23645,8 +23683,9 @@ async fn check_against_bank_run(import_missing: bool) -> Result<Value, String> {
                           description: l.memo.clone(), matched: vec![l.id.clone()], bank: Map::new() }
             }
         };
-        found.insert(crate::bank_declined::row_id(&d.reason, &d.txn_id));
-        if crate::bank_declined::record(&conn, &d, &now)? { new_rows += 1; }
+        let rid = crate::bank_declined::row_id(&d.reason, &d.txn_id);
+        found.insert(rid.clone());
+        if crate::bank_declined::record(&conn, &d, &now)? { new_rows += 1; fresh.insert(rid); }
     }
     // R-600: a row the bank no longer shows hands any booking to the bank's own copy of the same payment (one the
     // bank served in this check) when there is exactly one, and goes, backed up. No copy: it stays on the list.
@@ -23697,39 +23736,153 @@ async fn check_against_bank_run(import_missing: bool) -> Result<Value, String> {
         crate::bank_declined::set_status(&conn, &id, status, "Check against bank", &now)?;
         closed += 1;
     }
-    // R-590: after a takeover, bring in what the other computer's silence left out.
-    let mut auto_imported = 0usize;
-    if import_missing {
-        let ids: Vec<String> = findings.iter().filter_map(|f| match f {
-            Finding::Missing { bank: bi, removed_before: false } => Some(crate::bank_declined::row_id(crate::bank_declined::MISSING, &bank[*bi].id)),
-            _ => None,
-        }).collect();
-        drop(conn);
-        for id in ids {
-            match resolve_bank_declined_inner(id.clone(), "import".into(), "Check against bank (takeover)".into()).await {
-                Ok(v) if v.get("ok").and_then(|x| x.as_bool()) == Some(true) => auto_imported += 1,
-                Ok(_) => {}
-                Err(e) => tracing::warn!("takeover import of {} failed: {}", id, e),
+    drop(conn);
+    // R-670: the check answers its own findings (see the function's note). Each answer goes through the same guarded
+    // path a person's click takes; whatever a guard refuses stays open for a person.
+    let by = "Check against bank (automatic)";
+    let is_open = |id: &str| pool().get().ok().is_some_and(|c| c.query_row(
+        "SELECT 1 FROM bank_declined WHERE id=?1 AND status='open'", [id], |_| Ok(())).is_ok());
+    let (mut auto_imported, mut amended, mut auto_removed, mut swapped, mut two_payments, mut copies) = (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+    for f in &findings {
+        let (id, action) = match f {
+            Finding::Missing { bank: bi, removed_before: false } => (crate::bank_declined::row_id(crate::bank_declined::MISSING, &bank[*bi].id), "import"),
+            Finding::Differs { ledger: li, .. } => (crate::bank_declined::row_id(crate::bank_declined::DIFFERS, &ledger[*li].id), "use_bank"),
+            _ => continue,
+        };
+        if !is_open(&id) { continue; } // a person's own answer (keep, a copy) stands
+        match resolve_bank_declined_inner(id.clone(), action.into(), by.into()).await {
+            Ok(v) if v.get("ok").and_then(|x| x.as_bool()) == Some(true) => if action == "import" { auto_imported += 1 } else { amended += 1 },
+            Ok(_) => {}
+            Err(e) => tracing::info!("check against bank: {} left for a person ({}): {}", id, action, e),
+        }
+    }
+    let mut nab: std::collections::HashMap<&str, usize> = Default::default();
+    for f in &findings {
+        if let Finding::NotAtBank { ledger: li } = f { *nab.entry(ledger[*li].account.as_str()).or_default() += 1; }
+    }
+    for f in &findings {
+        let Finding::NotAtBank { ledger: li } = f else { continue };
+        let l = &ledger[*li];
+        let rid = crate::bank_declined::row_id(crate::bank_declined::NOT_AT_BANK, &l.id);
+        if fresh.contains(&rid) || !is_open(&rid) { continue; }
+        let posted = tallies.iter().find(|t| t.account == l.account).map(|t| t.posted).unwrap_or(0);
+        if !crate::bank_declined::removal_trusted(nab.get(l.account.as_str()).copied().unwrap_or(0), posted) { continue; }
+        match delete_bank_txns_inner(vec![l.id.clone()], Some(false), "not_at_bank").await {
+            Ok(v) if v.get("deleted").and_then(|x| x.as_u64()) == Some(1) => {
+                if let Ok(c) = pool().get() { let _ = crate::bank_declined::set_status(&c, &rid, "removed", by, &now); }
+                auto_removed += 1;
+            }
+            Ok(_) => {} // tied to a deal or a record: a person decides
+            Err(e) => tracing::info!("check against bank: {} left for a person (remove): {}", rid, e),
+        }
+    }
+    let mut over2: Vec<String> = Vec::new();
+    let mut touched2: std::collections::HashSet<String> = Default::default();
+    {
+        // A booking on a row the bank took back moves to the one unbooked posted transaction that can be it.
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let rows = load_dedup_rows(&conn)?;
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let retracted = crate::bank_dedup::retracted_rows(&rows, &aliases, &today);
+        let mut claims: std::collections::HashMap<&str, usize> = Default::default();
+        for r in &retracted { for m in &r.matches { *claims.entry(m.to_id.as_str()).or_default() += 1; } }
+        let by_id: std::collections::HashMap<&str, &crate::bank_dedup::TxnRow> = rows.iter().map(|r| (r.id.as_str(), r)).collect();
+        for r in &retracted {
+            let [m] = r.matches.as_slice() else { continue };
+            if claims.get(m.to_id.as_str()) != Some(&1) || !bank_ids.contains(m.to_id.as_str()) { continue; }
+            if by_id.get(m.to_id.as_str()).map_or(true, |t| t.reviewed || t.linked) { continue; }
+            if swap_blocker(&conn, &r.id, &m.to_id).is_some() { continue; }
+            if let Settled::Retired = settle_retracted_twin(&conn, &r.id, &m.to_id, &now, &mut over2, &mut touched2) { swapped += 1; }
+        }
+    }
+    // The books as they are now, held against the same list: what is left, and what the list proves about rows
+    // that look alike.
+    let judge = || -> Result<(crate::bank_declined::Paired, Vec<crate::bank_declined::LedgerTxn>), String> {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let l2 = fold_check_ledger(check_ledger_rows(&conn)?, &bank_labels, &live, &aliases);
+        let gone: std::collections::HashSet<String> = {
+            let held: std::collections::HashSet<&str> = l2.iter().map(|l| l.id.as_str()).collect();
+            bank.iter().filter(|b| !held.contains(b.id.as_str()) && sync::is_tombstoned("bank_txn", &b.id)).map(|b| b.id.clone()).collect()
+        };
+        Ok((crate::bank_declined::compare_paired(&bank, &l2, &gone, &fed_pas), l2))
+    };
+    let (mut after, mut ledger2) = judge()?;
+    // Accounts where a copy the bank's list names could not be retired: they do not agree yet.
+    let mut stuck: std::collections::HashSet<String> = Default::default();
+    {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let by_id: std::collections::HashMap<&str, &crate::bank_declined::LedgerTxn> = ledger2.iter().map(|l| (l.id.as_str(), l)).collect();
+        for d in crate::bank_near_dup::near_duplicates(&near_dup_rows(&conn)?) {
+            let (Some(a), Some(b)) = (by_id.get(d.keep_id.as_str()), by_id.get(d.extra_id.as_str())) else { continue };
+            match crate::bank_declined::look_alike(a, b, &after) {
+                crate::bank_declined::LookAlike::TwoPayments => {
+                    if mark_two_payments(&conn, &d.keep_id, &d.extra_id, &now).is_ok() { two_payments += 1; }
+                }
+                crate::bank_declined::LookAlike::Copy { keep, extra } => {
+                    match retire_near_duplicate(&conn, &keep, &extra, &now, "bank_lists_one", &mut over2, &mut touched2) {
+                        Settled::Retired => copies += 1,
+                        _ => { stuck.insert(a.account.clone()); }
+                    }
+                }
+                crate::bank_declined::LookAlike::Unknown => {}
             }
         }
-    } else {
-        drop(conn);
     }
-    for d in &handed_touched { let _ = resync_completed_deal(d); }
-    if handed_over > 0 { crate::netsync::push_now(); }
+    if copies > 0 { (after, ledger2) = judge()?; }
+    for w in &over2 { tracing::warn!("check against bank: {}", w); }
+    for d in handed_touched.iter().chain(touched2.iter()) { let _ = resync_completed_deal(d); }
+    // An account agrees when every posted transaction the bank lists is in the books exactly, nothing the bank does
+    // not list is left in them, and no row the bank took back is still held. Its books check starts from here: what
+    // is left between the bank's balance and the rows is history from before the bank's list, or a balance the bank
+    // has not caught up yet, and neither is a fault in the books.
+    let clean: std::collections::HashSet<String> = after.tallies.iter()
+        .filter(|t| t.posted > 0 && t.not_exact == 0 && !stuck.contains(&t.account)
+            && !ledger2.iter().any(|l| l.retracted && l.account == t.account))
+        .map(|t| t.account.clone()).collect();
+    let mut accepted = 0usize;
+    {
+        let recon = { let conn = pool().get().map_err(|e| e.to_string())?; reconcile_accounts_inner(&conn, false)?.0 };
+        let mut base: serde_json::Map<String, Value> = read_setting("recon_baselines")
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok()).and_then(|v| v.as_object().cloned()).unwrap_or_default();
+        let mut at = recon_baseline_times();
+        for r in recon.iter().filter(|r| clean.contains(&r.account) && r.drift.abs() >= 0.005) {
+            base.insert(r.account.clone(), json!(r.implied_opening));
+            at.insert(r.account.clone(), json!(now));
+            accepted += 1;
+        }
+        if accepted > 0 {
+            write_setting("recon_baselines", &Value::Object(base).to_string())?;
+            write_setting("recon_baselines_at", &Value::Object(at).to_string())?;
+        }
+    }
+    if handed_over + auto_removed + swapped + two_payments + copies + amended > 0 { crate::netsync::push_now(); }
+    // What is left after the fixes (the counts above are what the check found before them).
+    let (mut left_missing, mut left_differs, mut left_not_at_bank) = (0usize, 0usize, 0usize);
+    for f in &after.findings {
+        match f {
+            Finding::Missing { .. } => left_missing += 1,
+            Finding::Differs { .. } => left_differs += 1,
+            Finding::NotAtBank { .. } => left_not_at_bank += 1,
+        }
+    }
     let conn = pool().get().map_err(|e| e.to_string())?;
-    let accounts: Vec<Value> = tallies.iter().map(|t| json!({
+    let accounts: Vec<Value> = after.tallies.iter().map(|t| json!({
         "account": t.account, "posted": t.posted, "exact": t.exact, "not_exact": t.not_exact, "from_statement": t.from_statement,
+        "clean": clean.contains(&t.account),
     })).collect();
     let summary = json!({
-        "checked_at": now, "accounts": accounts, "missing": missing, "differs": differs, "not_at_bank": not_at_bank - handed_over,
+        "checked_at": now, "accounts": accounts, "missing": left_missing, "differs": left_differs, "not_at_bank": left_not_at_bank,
         "new_rows": new_rows, "closed": closed, "errors": errors, "auto_imported": auto_imported,
         "handed_over": handed_over,
+        "found": { "missing": missing, "differs": differs, "not_at_bank": not_at_bank },
+        // R-670: what this run put right by itself.
+        "fixed": { "imported": auto_imported, "amended": amended, "removed": auto_removed, "moved": swapped + handed_over,
+                   "two_payments": two_payments, "copies": copies, "agreed": accepted },
     });
     conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('bank_check', ?1)", [summary.to_string()])
         .map_err(|e| e.to_string())?;
-    tracing::info!("check against bank: {} posted, {} missing, {} differ, {} not at the bank, {} closed",
-        bank.len(), missing, differs, not_at_bank, closed);
+    tracing::info!("check against bank: {} posted; found {} missing, {} differ, {} not at the bank; left {} / {} / {}; {} closed",
+        bank.len(), missing, differs, not_at_bank, left_missing, left_differs, left_not_at_bank, closed);
     drop(conn);
     publish_balance_and_health();
     Ok(summary)
@@ -23768,7 +23921,11 @@ async fn check_against_bank_if_due() {
             .unwrap_or(s))
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
         .map_or(true, |t| Utc::now().signed_duration_since(t) > chrono::Duration::hours(hours));
-    if !older_than("bank_check", 24) || !older_than("bank_check_tried", 1) { return; }
+    // R-670: once a day, and whenever an account does not agree with the bank (at most once an hour), so the books
+    // are put right after the pull that showed the difference, not a day later.
+    let off = pool().get().ok().and_then(|c| reconcile_accounts_inner(&c, false).ok())
+        .is_some_and(|(r, _)| r.iter().any(|a| a.drift.abs() >= 0.005));
+    if !older_than("bank_check_tried", 1) || (!older_than("bank_check", 24) && !off) { return; }
     if let Ok(c) = pool().get() {
         let _ = c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('bank_check_tried', ?1)", [Utc::now().to_rfc3339()]);
     }
