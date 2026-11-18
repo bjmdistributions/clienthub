@@ -10974,6 +10974,14 @@ pub async fn lot_feed(action: String, body: Option<Value>) -> Result<Value, Stri
         "set" => http.post(format!("{base}/api/inventory/feed/settings")).json(&body.unwrap_or_else(|| json!({}))),
         "key" => http.post(format!("{base}/api/inventory/feed/key")).json(&json!({})),
         "off" => http.post(format!("{base}/api/inventory/feed/off")).json(&json!({})),
+        // R-675: one upload waiting for approval, with its photos (paths on `server`).
+        "held" => {
+            let id = body.as_ref().and_then(|b| b.get("approval_id")).and_then(|v| v.as_str()).unwrap_or("");
+            if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+                return Err("Unknown upload".into());
+            }
+            http.get(format!("{base}/api/inventory/feed/held/{id}"))
+        }
         _ => return Err("Unknown action".into()),
     };
     let resp = req.bearer_auth(&token).send().await.map_err(|e| e.to_string())?;
@@ -10984,6 +10992,7 @@ pub async fn lot_feed(action: String, body: Option<Value>) -> Result<Value, Stri
     }
     if let Some(o) = v.as_object_mut() {
         o.insert("address".into(), json!(format!("{base}/api/inventory/feed")));
+        if action == "held" { o.insert("server".into(), json!(base)); }
     }
     Ok(v)
 }

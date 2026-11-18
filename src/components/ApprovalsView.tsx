@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { api, isUnavailable, type ApprovalRequest, type Client, type LeadNotification, type Me } from "../lib/api";
+import { api, isUnavailable, type ApprovalRequest, type Client, type LeadNotification, type LotDetails, type LotFeedHeld, type Me } from "../lib/api";
+import { lotPriceBlock } from "../lib/price";
+import { fmtAmount } from "../lib/format";
 import PendingReviewModal from "./PendingReviewModal";
 import { Inbox, X, Store, Reply } from "lucide-react";
 import StatusPill from "./StatusPill";
@@ -146,6 +148,115 @@ function LeadDetails({ n }: { n: LeadNotification }) {
   );
 }
 
+/** R-675: a lot the upload address is holding, opened before it is added: its photos, large,
+ *  and everything the sheet said about it. Add and Discard answer it, as the row used to. */
+function FeedReview({ a, onClose, onDecide }: { a: ApprovalRequest; onClose: () => void; onDecide: (approve: boolean) => Promise<void> }) {
+  const [held, setHeld] = useState<LotFeedHeld | null>(null);
+  const [error, setError] = useState("");
+  const [shown, setShown] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(() => {
+    setError("");
+    api.lotFeedHeld(a.id).then(setHeld).catch((e) => setError(String(e?.message || e || "Couldn't open this upload.")));
+  }, [a.id]);
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+      const n = held?.photos.length || 0;
+      if (e.key === "ArrowRight" && n) setShown((i) => Math.min(i + 1, n - 1));
+      if (e.key === "ArrowLeft" && n) setShown((i) => Math.max(i - 1, 0));
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [held, onClose]);
+
+  const d = held?.draft;
+  const src = (rel: string) => `${held!.server.replace(/\/$/, "")}/${rel}`;
+  const price = d ? lotPriceBlock(d, (d.details || {}) as LotDetails) : null;
+  const facts: [string, string][] = d ? ([
+    ["Price", price ? [price.headline, price.unit].filter(Boolean).join(" ") : ""],
+    ["Quantity", d.quantity > 0 ? d.quantity.toLocaleString() : ""],
+    ["Your cost", d.total_cost > 0 ? fmtAmount(d.total_cost) : ""],
+    ["Supplier", d.supplier || ""],
+    ["Location", d.location || ""],
+    ["Category", d.category || ""],
+  ] as [string, string][]).filter(([, v]) => v) : [];
+  const decide = async (approve: boolean) => { setBusy(true); await onDecide(approve); setBusy(false); };
+
+  let photoNote = "";
+  if (held) {
+    if (held.photo_links === 0) photoNote = "This upload came without photos.";
+    else if (!held.photos_ready && held.photos.length === 0) photoNote = "The photos are still being downloaded. Check again in a minute.";
+    else if (held.photos.length === 0) photoNote = `None of the ${held.photo_links} photo links could be opened.`;
+    else if (held.photos_failed > 0) photoNote = `${held.photos_failed} of ${held.photo_links} photo links could not be opened.`;
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
+      <div className="bg-surface border border-line rounded-2xl w-full max-w-4xl p-5 max-h-[92vh] overflow-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between gap-3 mb-4">
+          <div className="min-w-0">
+            <h3 className="text-[18px] font-medium text-ink break-words">{d?.name || "New upload"}</h3>
+            <div className="ui-note mt-0.5">Sent to your upload address {new Date(a.created_at).toLocaleString()}. Nothing is in your inventory until you add it.</div>
+          </div>
+          <button onClick={onClose} aria-label="Close" className="ui-ib flex-shrink-0"><X size={16} /></button>
+        </div>
+
+        {error ? (
+          <div className="text-[14px] text-ink bg-surface-2 rounded-lg p-3 mb-4">{error}</div>
+        ) : !held ? (
+          <div className="text-[14px] text-muted py-10 text-center">Opening the upload…</div>
+        ) : (
+          <div className="grid gap-5 md:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] mb-5">
+            <div>
+              {held.photos.length > 0 ? (<>
+                <a href={src(held.photos[shown])} target="_blank" rel="noreferrer" title="Open full size"
+                  className="block rounded-xl overflow-hidden bg-surface-2 ring-1 ring-line">
+                  <img src={src(held.photos[shown])} alt={`Photo ${shown + 1} of ${held.photos.length}`} className="w-full h-[min(52vh,460px)] object-contain" />
+                </a>
+                {held.photos.length > 1 && (
+                  <div className="flex flex-wrap gap-2 mt-2">
+                    {held.photos.map((p, i) => (
+                      <button key={p} onClick={() => setShown(i)} aria-label={`Show photo ${i + 1}`}
+                        className={`w-16 h-16 rounded-lg overflow-hidden bg-surface-2 ring-1 ${i === shown ? "ring-ink" : "ring-line opacity-80 hover:opacity-100"}`}>
+                        <img src={src(p)} alt="" className="w-full h-full object-cover" />
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </>) : (
+                <div className="rounded-xl bg-surface-2 ring-1 ring-line h-[220px] flex items-center justify-center text-center text-[14px] text-muted px-6">
+                  {photoNote || "No photos."}
+                </div>
+              )}
+              {held.photos.length > 0 && photoNote && <div className="ui-note mt-2">{photoNote}</div>}
+              {!held.photos_ready && held.photo_links > 0 && (
+                <button onClick={load} className="ui-btn mt-2">Check again</button>
+              )}
+            </div>
+            <div className="min-w-0">
+              <dl className="grid grid-cols-[96px_minmax(0,1fr)] gap-x-3 gap-y-2 text-[14px]">
+                {facts.map(([k, v]) => (<Fragment key={k}>
+                  <dt className="text-muted">{k}</dt>
+                  <dd className="text-ink break-words">{v}</dd>
+                </Fragment>))}
+              </dl>
+              {d?.description && <p className="text-[14px] text-ink mt-4 whitespace-pre-wrap break-words">{d.description}</p>}
+              {d?.notes && <p className="ui-note mt-3 whitespace-pre-wrap break-words">{d.notes}</p>}
+            </div>
+          </div>
+        )}
+
+        <div className="flex gap-2 justify-end">
+          <Button disabled={busy} onClick={() => decide(false)}>Discard</Button>
+          <Button variant="ink" disabled={busy || !held} onClick={() => decide(true)}>Add to inventory</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function ApprovalsView({ me, notices }: { me?: Me | null; notices?: NoticeState }) {
   // R-460: someone who only sees deals or the books has no customers or requests to review, only the
   // logistics and bill notices below. The admin calls are never made for them.
@@ -158,6 +269,7 @@ export function ApprovalsView({ me, notices }: { me?: Me | null; notices?: Notic
   const [customersFailed, setCustomersFailed] = useState(false);
   const [selected, setSelected] = useState<ApprovalRequest | null>(null);
   const [reviewClient, setReviewClient] = useState<Client | null>(null);
+  const [feedReview, setFeedReview] = useState<ApprovalRequest | null>(null);
   const [opened, setOpened] = useState<string | null>(null);
 
   // Archive toggle — swaps the whole page to resolved (approved/rejected)
@@ -257,8 +369,15 @@ export function ApprovalsView({ me, notices }: { me?: Me | null; notices?: Notic
         <button onClick={() => quick(r.a!.id, false)} className={BTN_LINE}>Reject</button>
       </>);
     }
+    // R-675: a new lot from the upload address is looked at before it is added.
+    if (r.a?.kind === "lot_feed_new") {
+      return (<>
+        <button onClick={() => setFeedReview(r.a!)} className={BTN_SOLID}>Review</button>
+        <button onClick={() => quick(r.a!.id, false)} className={BTN_LINE}>Discard</button>
+      </>);
+    }
     // R-559: the server adds the lot, or renews it with its new price, once the answer reaches it.
-    if (r.a?.kind === "lot_feed_new" || r.a?.kind === "lot_feed_repeat") {
+    if (r.a?.kind === "lot_feed_repeat") {
       const repeat = r.a.kind === "lot_feed_repeat";
       return (<>
         <button onClick={() => quick(r.a!.id, true)} className={BTN_SOLID}>{repeat ? "Reset time" : "Add"}</button>
@@ -406,6 +525,10 @@ export function ApprovalsView({ me, notices }: { me?: Me | null; notices?: Notic
           onResolved={() => { setReviewClient(null); changed(); }} />
       )}
       {selected && <ApprovalDetail a={selected} onClose={() => setSelected(null)} onResolved={resolved} />}
+      {feedReview && (
+        <FeedReview a={feedReview} onClose={() => setFeedReview(null)}
+          onDecide={async (approve) => { await quick(feedReview.id, approve); setFeedReview(null); }} />
+      )}
     </div>
   );
 }

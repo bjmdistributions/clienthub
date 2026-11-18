@@ -2943,6 +2943,23 @@ export interface LotFeedSettings {
   key?: string;
 }
 
+// R-675: one upload waiting for approval, as the server answers it. `photos` are paths on `server`;
+// `photos_ready` is false while they are still being fetched from the links the sheet gave.
+export interface LotFeedHeld {
+  kind: "new" | "repeat";
+  lot_id: string | null;
+  draft: {
+    name: string; description: string | null; category: string | null; quantity: number; total_cost: number;
+    asking_price: number; price_type: string; notes: string | null; supplier: string | null; location: string | null;
+    details: Record<string, unknown> | null;
+  } | null;
+  photo_links: number;
+  photos: string[];
+  photos_ready: boolean;
+  photos_failed: number;
+  server: string;
+}
+
 // R-562: the Google calendar, as the server answers it (clienthub-api routes/calendar.rs).
 export interface CalendarPerson {
   staff_id: string; name: string; email: string;
@@ -5381,6 +5398,7 @@ export const api = {
     invoke<CalendarState>("google_calendar", { action, body: body ?? null }),
   lotFeed: (action: "get" | "set" | "key" | "off", body?: { review?: boolean; expire_days?: number }) =>
     invoke<LotFeedSettings>("lot_feed", { action, body: body ?? null }),
+  lotFeedHeld: (approvalId: string) => invoke<LotFeedHeld>("lot_feed", { action: "held", body: { approval_id: approvalId } }),
   listInboundLoads: () => invoke<InboundLoad[]>("list_inbound_loads"),
   approveInboundLoad: (id: string, lots: ApproveLotInput[]) => invoke<string[]>("approve_inbound_load", { id, lots }),
   rejectInboundLoad: (id: string) => invoke<void>("reject_inbound_load", { id }),
