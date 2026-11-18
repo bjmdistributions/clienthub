@@ -481,6 +481,37 @@ pub fn fingerprint(account: &str, r: &TxnRow) -> String {
     format!("{}|{}", account.trim().to_lowercase(), content_key(r))
 }
 
+/// R-667: a row a connection brought in this long after its own date came from a history pull, not from the
+/// day-to-day feed (which delivers a transaction within days of it posting).
+const REPULL_DAYS: i64 = 30;
+
+/// R-667 (Jack, 2026-11-17: "my book is wrong on all balances"). Proof by a history pull that the copies in a group
+/// are one transaction seen twice, for groups where some rows predate the connection stamp. A reconnected bank
+/// sends its whole history again under new ids; when those rows were also booked by the rules as they landed, every
+/// pair read "a booked copy would be removed: resolve by hand" and stayed on the books (188 pairs on one card).
+/// The proof: one stamped connection whose every row in the group came in at least `REPULL_DAYS` after the
+/// transaction's date and after every unstamped row in the group was already on the books. That connection read
+/// the account's history in one go, so it holds each real transaction once, and the older rows are what it re-read.
+fn proven_by_history_pull(idxs: &[usize], rows: &[TxnRow]) -> bool {
+    let mut unstamped_latest: Option<&str> = None;
+    let mut by_pa: HashMap<String, Vec<usize>> = HashMap::new();
+    for &i in idxs {
+        let pa = meta(&rows[i].raw_json).pa;
+        if pa.is_empty() {
+            let at = rows[i].imported_at.as_str();
+            if at.is_empty() { return false; }
+            if unstamped_latest.map_or(true, |l| at > l) { unstamped_latest = Some(at); }
+        } else {
+            by_pa.entry(pa).or_default().push(i);
+        }
+    }
+    let Some(latest) = unstamped_latest else { return false };
+    by_pa.values().any(|v| v.iter().all(|&i| {
+        let r = &rows[i];
+        r.imported_at.as_str() > latest && signed_day_gap(&r.imported_at, &r.date).is_some_and(|g| g >= REPULL_DAYS)
+    }))
+}
+
 fn day_gap(a: &str, b: &str) -> Option<i64> {
     let d = |s: &str| chrono::NaiveDate::parse_from_str(&s[..s.len().min(10)], "%Y-%m-%d").ok();
     Some((d(a)? - d(b)?).num_days().abs())
@@ -657,6 +688,10 @@ pub struct Removal {
     pub carry_to: String,
     /// The copy was booked; its booking is identical to (or a subset of) the survivor's.
     pub booked: bool,
+    /// R-667: the copy is a history pull's re-read of a row booked before it, and the rules gave the copy another
+    /// category or payee name as it landed. The row that was on the books first keeps its booking; the copy's goes
+    /// with its backup. Notes, payment methods and tags still have to agree.
+    pub first_booking_stands: bool,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -723,15 +758,25 @@ pub fn plan(rows: &[TxnRow], stored: &HashMap<String, String>, aggressive: bool)
     };
     // Every loser needs a survivor to carry its booking to; a booked loser only onto a booked
     // survivor whose booking agrees with it.
-    let removals_for = |keep: &[usize], losers: &[usize]| -> Option<Vec<Removal>> {
+    let removals_for = |keep: &[usize], losers: &[usize], pulled_again: bool| -> Option<Vec<Removal>> {
         losers.iter().map(|&l| {
             let lr = &rows[l];
+            let mut first_booking_stands = false;
             let k = if lr.reviewed {
-                *keep.iter().find(|&&k| rows[k].reviewed && booking_compatible(lr, &rows[k]))?
+                match keep.iter().find(|&&k| rows[k].reviewed && booking_compatible(lr, &rows[k])) {
+                    Some(&k) => k,
+                    // Only for a copy a history pull brought in (long after its date) beside a row booked before it.
+                    None if pulled_again && signed_day_gap(&lr.imported_at, &lr.date).is_some_and(|g| g >= REPULL_DAYS) => {
+                        first_booking_stands = true;
+                        *keep.iter().find(|&&k| rows[k].reviewed && rows[k].imported_at < lr.imported_at
+                            && hand_fields_compatible(lr, &rows[k]))?
+                    }
+                    None => return None,
+                }
             } else {
                 *keep.iter().find(|&&k| hand_fields_compatible(lr, &rows[k]))?
             };
-            Some(Removal { id: lr.id.clone(), carry_to: rows[k].id.clone(), booked: lr.reviewed })
+            Some(Removal { id: lr.id.clone(), carry_to: rows[k].id.clone(), booked: lr.reviewed, first_booking_stands })
         }).collect()
     };
 
@@ -767,6 +812,8 @@ pub fn plan(rows: &[TxnRow], stored: &HashMap<String, String>, aggressive: bool)
         for &i in idxs { *per_label.entry(rows[i].account.as_str()).or_default() += 1; }
         let folded = per_label.len() > 1;
         let all_have_pa = !folded && idxs.iter().all(|&i| !meta(&rows[i].raw_json).pa.is_empty());
+        // R-667: or a history pull proves the same thing for rows from before the stamp.
+        let proven = all_have_pa || (!folded && proven_by_history_pull(idxs, rows));
         // How many copies are real. Each view of an account reports each real transaction
         // once, so within one label the answer is the most any single view reported. A view is
         // a Plaid connection (`pa`), or — for rows imported before `pa` was stamped — one
@@ -826,11 +873,11 @@ pub fn plan(rows: &[TxnRow], stored: &HashMap<String, String>, aggressive: bool)
         // A booked copy is only ever removed on proof that it is a second view of one
         // transaction: every copy carries its connection, or the account's two names are a
         // proven rename. Older rows with no connection stamp keep the old rule.
-        if (cross || (!folded && !all_have_pa)) && losers.iter().any(|&i| rows[i].reviewed) {
+        if (cross || (!folded && !proven)) && losers.iter().any(|&i| rows[i].reviewed) {
             review.push(review_item(idxs, s, "a booked copy would be removed: resolve by hand".into(), folded));
             continue;
         }
-        let Some(removals) = removals_for(keep, losers) else {
+        let Some(removals) = removals_for(keep, losers, proven) else {
             review.push(review_item(idxs, s, "the copies are booked differently: resolve by hand".into(), folded));
             continue;
         };
@@ -838,7 +885,7 @@ pub fn plan(rows: &[TxnRow], stored: &HashMap<String, String>, aggressive: bool)
             review.push(review_item(idxs, s, "same transaction on two account labels: confirm these accounts are one".into(), true));
             continue;
         }
-        if !folded && !all_have_pa && !aggressive {
+        if !folded && !proven && !aggressive {
             let whole_dollar = ((s.amount * 100.0).round() as i64) % 100 == 0;
             let dl = s.desc.to_lowercase();
             let generic = s.desc.trim().is_empty() || generic_terms.iter().any(|t| dl.contains(t));
@@ -901,7 +948,7 @@ pub fn plan(rows: &[TxnRow], stored: &HashMap<String, String>, aggressive: bool)
             review.push(review_item(idxs, s, "same bank reference on two dates, both linked to deals: resolve by hand".into(), a.account != b.account));
             continue;
         }
-        let Some(removals) = removals_for(keep, losers) else {
+        let Some(removals) = removals_for(keep, losers, false) else {
             review.push(review_item(idxs, s, "same bank reference on two dates, booked differently: resolve by hand".into(), a.account != b.account));
             continue;
         };
@@ -1120,6 +1167,60 @@ mod tests {
         for aggressive in [false, true] {
             assert!(plan(&v, &HashMap::new(), aggressive).groups.is_empty());
         }
+    }
+
+    // R-667: a reconnected bank sends its history again; the rules book the copies as they land. The history pull
+    // is the proof that each pair is one transaction, so the copy goes and its booking is kept on the survivor.
+    #[test]
+    fn r667_a_history_pull_proves_a_booked_copy() {
+        let acct = "BUSINESS CARD \u{00b7}\u{00b7}3456";
+        let v = vec![
+            booked(row("old", acct, "2026-02-02", 25.0, "out", "EXAMPLE SHOP 12", "", "2026-07-14T02:39:06Z"), "software"),
+            booked(row("again", acct, "2026-02-02", 25.0, "out", "EXAMPLE SHOP 12", "pa_new", "2026-11-16T21:31:43Z"), "software"),
+        ];
+        for aggressive in [false, true] {
+            let p = plan(&v, &HashMap::new(), aggressive);
+            assert_eq!(p.groups.len(), 1, "aggressive={aggressive}");
+            assert_eq!((p.groups[0].keep.as_str(), p.groups[0].remove.clone()), ("old", vec!["again".to_string()]));
+            assert!(p.groups[0].removals[0].booked);
+        }
+        // The rules booked the copy another way as it landed: the row that was there first keeps its booking.
+        let mut w = v.clone();
+        w[1].category = "meals".into();
+        let p = plan(&w, &HashMap::new(), false);
+        assert_eq!(p.groups.len(), 1);
+        assert_eq!(p.groups[0].keep, "old");
+        assert!(p.groups[0].removals[0].first_booking_stands);
+        // The same between two stamped connections: the second link's history pull is the copy.
+        let mut two = w.clone();
+        two[0].raw_json = json!({"pa": "pa_first", "tid": "old", "dt": ""}).to_string();
+        let p = plan(&two, &HashMap::new(), false);
+        assert_eq!((p.groups.len(), p.groups[0].keep.as_str()), (1, "old"));
+        // A note a person wrote on the copy that the first row does not have the same: still a person's call.
+        w[0].note = "paid for the trade show".into();
+        w[1].note = "refund expected".into();
+        let p = plan(&w, &HashMap::new(), false);
+        assert!(p.groups.is_empty());
+        assert!(p.review.iter().any(|r| r["reason"].as_str().unwrap().contains("booked differently")));
+        // The stamped row came in days after it posted: the day-to-day feed, which can hold a real second charge.
+        let mut live = v.clone();
+        live[1].imported_at = "2026-07-16T10:00:00Z".into();
+        live[1].date = "2026-07-12".into();
+        live[0].date = "2026-07-12".into();
+        let p = plan(&live, &HashMap::new(), true);
+        assert!(p.groups.is_empty());
+        assert!(p.review.iter().any(|r| r["reason"].as_str().unwrap().contains("a booked copy would be removed")));
+        // Two real charges in the old run and one history pull holding both: two stay.
+        let two = vec![
+            booked(row("a1", acct, "2026-02-02", 25.0, "out", "EXAMPLE SHOP 12", "", "2026-07-14T02:39:06Z"), "software"),
+            booked(row("a2", acct, "2026-02-02", 25.0, "out", "EXAMPLE SHOP 12", "", "2026-07-14T02:39:06Z"), "software"),
+            booked(row("b1", acct, "2026-02-02", 25.0, "out", "EXAMPLE SHOP 12", "pa_new", "2026-11-16T21:31:43Z"), "software"),
+            booked(row("b2", acct, "2026-02-02", 25.0, "out", "EXAMPLE SHOP 12", "pa_new", "2026-11-16T21:31:43Z"), "software"),
+        ];
+        let p = plan(&two, &HashMap::new(), false);
+        assert_eq!(p.groups.len(), 1);
+        assert_eq!(p.groups[0].keep_all.len(), 2);
+        assert_eq!(p.groups[0].remove.len(), 2);
     }
 
     #[test]

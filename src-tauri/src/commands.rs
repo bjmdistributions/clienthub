@@ -21293,6 +21293,18 @@ const BANK_TXN_LINKED_EXPR: &str =
       OR EXISTS(SELECT 1 FROM business_expense WHERE bank_txn_id=bank_txn.id) \
       OR EXISTS(SELECT 1 FROM bill_payments WHERE bank_txn_id=bank_txn.id))";
 
+/// R-667: tied to business work a person did or confirmed. Like `bank_txn_is_linked`, except that a bill link
+/// counts only once confirmed: an automatic bill guess, or one already rejected, holds nothing. Fails SAFE (true).
+pub(crate) fn bank_txn_is_firmly_linked(conn: &rusqlite::Connection, id: &str) -> bool {
+    let expr = BANK_TXN_LINKED_EXPR.replace(
+        "FROM bill_payments WHERE bank_txn_id=bank_txn.id",
+        "FROM bill_payments WHERE bank_txn_id=bank_txn.id AND status='confirmed'");
+    if expr == BANK_TXN_LINKED_EXPR { return true; }
+    conn.query_row(&format!("SELECT {expr} FROM bank_txn WHERE id=?1"), [id], |r| r.get::<_, i64>(0))
+        .map(|v| v != 0)
+        .unwrap_or(true)
+}
+
 /// Linked to a deal, refund, loan, cash purchase or expense. Fails SAFE (true) on any error,
 /// including the row having gone.
 pub(crate) fn bank_txn_is_linked(conn: &rusqlite::Connection, id: &str) -> bool {
@@ -21444,7 +21456,9 @@ pub async fn dedupe_bank_txns(dry_run: bool, aggressive: bool) -> Result<Value, 
             if bank_txn_is_linked(&conn, &rm.id) { skipped_changed += 1; continue; }
             let (Some(l), Some(s)) = (dedup_booking(&conn, &rm.id), dedup_booking(&conn, &rm.carry_to)) else { skipped_changed += 1; continue };
             let still_ok = if l.reviewed {
-                s.reviewed && crate::bank_dedup::booking_compatible(&l, &s)
+                // R-667: a history pull's copy the rules booked another way; the first row's booking stands.
+                s.reviewed && (crate::bank_dedup::booking_compatible(&l, &s)
+                    || (rm.first_booking_stands && crate::bank_dedup::hand_fields_compatible(&l, &s)))
             } else {
                 crate::bank_dedup::hand_fields_compatible(&l, &s)
             };
@@ -24627,7 +24641,8 @@ pub async fn financials_overview() -> Result<Value, String> {
     } else {
         let sep = "\u{00b7}\u{00b7}";
         let on_mask = format!("instr(account_id,'{sep}')>0 AND substr(account_id, instr(account_id,'{sep}')+2)=?1");
-        let counted = crate::bank_flags::counted("bank_txn");
+        // R-667: posted rows only, like the books check (the bank's balance holds no pending row yet).
+        let counted = format!("{} AND NOT ({})", crate::bank_flags::counted("bank_txn"), crate::bank_flags::pending("bank_txn"));
         let net = |since: &str| -> f64 {
             conn.query_row(
                 &format!("SELECT COALESCE(SUM(CASE WHEN direction='in' THEN amount ELSE -amount END),0) FROM bank_txn \
@@ -24646,7 +24661,8 @@ pub async fn financials_overview() -> Result<Value, String> {
         let settled: f64 = baseline.as_ref().and_then(|(k, _)| recon_baseline_times().get(k).and_then(|v| v.as_str())
             .map(|at| recon_settled_before(&conn, &account_alias_map(), k, at, &mut None).iter().map(|x| x.1).sum())).unwrap_or(0.0);
         let baseline = baseline.and_then(|(_, v)| v);
-        let drift = baseline.map(|b| ((reserve_parked - all + settled) - b) * 100.0).map(|d| d.round() / 100.0);
+        let drift = if recon_is_exact(reserve_parked, all) { Some(0.0) }
+            else { baseline.map(|b| ((reserve_parked - all + settled) - b) * 100.0).map(|d| d.round() / 100.0) };
         (year, drift)
     };
 
@@ -29058,10 +29074,12 @@ fn reconcile_accounts_inner(conn: &rusqlite::Connection, rebaseline: bool) -> Re
     let mut out: Vec<ReconAccount> = Vec::new();
     let mut next = serde_json::Map::new();
     for (label, bal) in bank {
+        // R-667: posted rows only. The bank's balance (Plaid's `current`) does not hold a pending transaction yet,
+        // so counting one made every account read Off by its pending total, a figure that moved every day.
         let (net, count): (f64, i64) = conn
             .query_row(
-                "SELECT COALESCE(SUM(CASE WHEN direction='in' THEN amount ELSE -amount END),0), COUNT(*) \
-                 FROM bank_txn WHERE account_id=?1",
+                &format!("SELECT COALESCE(SUM(CASE WHEN direction='in' THEN amount ELSE -amount END),0), COUNT(*) \
+                          FROM bank_txn WHERE account_id=?1 AND NOT ({})", crate::bank_flags::pending("bank_txn")),
                 [&label],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
@@ -29069,16 +29087,19 @@ fn reconcile_accounts_inner(conn: &rusqlite::Connection, rebaseline: bool) -> Re
         let r2 = |x: f64| (x * 100.0).round() / 100.0;
         let implied = r2(bal - net);
         let baseline = stored.get(&label).and_then(|v| v.as_f64());
+        // R-667: the posted rows add up to the bank's balance to the cent. That is the whole account explained
+        // from a zero start, which no starting point can argue with: it agrees, and the starting point becomes 0.
+        let exact = recon_is_exact(bal, net);
         // R-662: history that came in after the starting point for days well before it was in the bank's balance
         // all along. `implied` fell by it; put it back, so a reconnect does not read as a difference.
         let settled: f64 = match (baseline, times.get(&label).and_then(|v| v.as_str())) {
             (Some(_), Some(at)) => recon_settled_before(conn, &aliases, &label, at, &mut dups).iter().map(|x| x.1).sum(),
             _ => 0.0,
         };
-        let drift = match baseline { Some(b) => r2(implied + settled - b), None => 0.0 };
+        let drift = match baseline { Some(b) if !exact => r2(implied + settled - b), _ => 0.0 };
         // Keep the ORIGINAL baseline unless asked to re-accept, or there wasn't one —
         // otherwise every check silently forgives the drift it just found.
-        let keep = if rebaseline { implied } else { baseline.unwrap_or(implied) };
+        let keep = if exact { 0.0 } else if rebaseline { implied } else { baseline.unwrap_or(implied) };
         next.insert(label.clone(), json!(keep));
         out.push(ReconAccount {
             account: label, bank_balance: r2(bal), ledger_net: r2(net),
@@ -29087,6 +29108,24 @@ fn reconcile_accounts_inner(conn: &rusqlite::Connection, rebaseline: bool) -> Re
     }
     out.sort_by(|a, b| b.drift.abs().partial_cmp(&a.drift.abs()).unwrap_or(std::cmp::Ordering::Equal));
     Ok((out, Some(next)))
+}
+
+/// R-667: the books and the bank agree outright when the posted rows add up to the bank's balance to the cent.
+fn recon_is_exact(bank_balance: f64, posted_net: f64) -> bool {
+    (bank_balance - posted_net).abs() < 0.005
+}
+
+#[cfg(test)]
+mod r667_exact_tests {
+    use super::recon_is_exact;
+
+    #[test]
+    fn rows_that_add_up_to_the_bank_agree_whatever_the_starting_point() {
+        assert!(recon_is_exact(1250.40, 1250.40));
+        assert!(recon_is_exact(-431.20, -431.2000001));
+        assert!(!recon_is_exact(1250.40, 1250.41));
+        assert!(!recon_is_exact(1250.40, 0.0));
+    }
 }
 
 #[cfg(test)]

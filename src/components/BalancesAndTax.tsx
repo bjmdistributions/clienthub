@@ -148,6 +148,11 @@ export default function BalancesAndTax({ onCheckBooks, onOpenRow, onToBook }: { 
   const thisMonth = tm?.months.find((m) => !m.closed);
   const monthNet = (m: TaxMonths["months"][number]) => m.net ?? m.base;
   const monthRows = tm ? tm.months.filter((m) => Math.abs(monthNet(m)) > 0.005 || Math.abs(m.due) > 0.005) : [];
+  // R-667 (Jack: "it shows net income but the line accross says 0 except for the recent months"): the tax is on the
+  // year so far, so a month adds nothing while the year is still at a loss. Each row carries the year so far to say so.
+  const yearSoFar = new Map<string, number>();
+  if (tm) { let run = 0; for (const m of tm.months) { run += monthNet(m); yearSoFar.set(m.month, run); } }
+  const signedAmount = (n: number) => `${n < 0 ? "-" : ""}${fmtAmount(Math.abs(n))}`;
   const ratePct = Math.round((ov?.tax_sweep_pct ?? tm?.rate ?? 0.3) * 1000) / 10;
 
   return (
@@ -304,12 +309,18 @@ export default function BalancesAndTax({ onCheckBooks, onOpenRow, onToBook }: { 
           <div className="min-w-0 divide-y divide-line-2 border-t border-line xl:border-t-0">
             {monthRows.length > 0 && (
               <div className="py-2">
-                <div className="text-[12px] text-muted mb-1">Each month</div>
+                <div className="flex items-baseline gap-3 mb-1">
+                  <span className="min-w-0 flex-1 text-[12px] text-muted">Each month</span>
+                  <span className="text-[12px] text-muted w-32 text-right flex-shrink-0">Tax to set aside</span>
+                </div>
+                <p className="text-[11px] text-muted mb-1.5 leading-snug">
+                  Tax is on the year so far, not on one month. While the year is at a loss there is nothing to set aside, and a good month first makes up the earlier losses.
+                </p>
                 {monthRows.map((m) => (
                   <div key={m.month} className="flex items-center gap-3 py-1 min-w-0">
                     <span className="min-w-0 flex-1 text-[12.5px] text-ink-2 truncate">
                       {monthName(m.month)}
-                      <span className="text-muted"> · net income {monthNet(m) < 0 ? "-" : ""}{fmtAmount(Math.abs(monthNet(m)))}</span>
+                      <span className="text-muted"> · net income {signedAmount(monthNet(m))} · year so far {signedAmount(yearSoFar.get(m.month) ?? 0)}</span>
                     </span>
                     <span className={`text-[12.5px] tabular-nums w-32 text-right flex-shrink-0 ${m.closed ? "text-ink-2" : "text-muted"}`}>
                       {m.due < 0 ? `-${fmtAmount(-m.due)}` : fmtAmount(m.due)}

@@ -401,7 +401,13 @@ fn move_account_rows(conn: &rusqlite::Connection, mark: &Mark, aliases: &std::co
         ids.extend(found);
     }
     for bid in &ids {
-        if crate::commands::bank_txn_is_linked(conn, bid) {
+        // R-667: an automatic bill guess ("this looks like the internet bill") held one personal row on the books
+        // and in To book. A guess nobody confirmed is not business work: it is rejected and the row moves.
+        let firm = crate::commands::bank_txn_is_firmly_linked(conn, bid);
+        if !firm && crate::commands::bank_txn_is_linked(conn, bid) {
+            if crate::bills::reject_guesses_for_txn(conn, bid).is_err() { not_moved += 1; continue; }
+        }
+        if firm {
             kept.push(conn.query_row(
                 "SELECT json_object('id',id,'posted_at',posted_at,'amount',amount,'direction',direction,'description',description) FROM bank_txn WHERE id=?1",
                 [bid], |r| r.get::<_, String>(0)).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(json!({ "id": bid })));
@@ -607,6 +613,9 @@ mod tests {
         row("r666_bare", "accR666");                                   // a bare Plaid account id
         row("r666_alias", "My Card");                                  // the name it was merged into
         row("r666_other", "Other Bank Card \u{00b7}\u{00b7}6660");  // another bank's card with the same last four
+        // R-667: an automatic bill guess on one of them does not hold it on the books.
+        c.execute("INSERT INTO bill_payments (id, bill_id, bank_txn_id, period, amount, status, created_by, created_at, updated_at) \
+                   VALUES ('bp-r666-guess','bill-r666','r666_today','',20.0,'auto','system','2026-11-10','2026-11-10')", []).unwrap();
         let aliases: std::collections::HashMap<String, String> = [("Everyday Card \u{00b7}\u{00b7}6660".to_string(), "My Card".to_string())].into();
         let m = marks(&c).into_iter().find(|m| m.key == "k666").unwrap();
         let (moved, not_moved, kept) = move_account_rows(&c, &m, &aliases, "2026-11-17T10:00:00Z");
@@ -617,6 +626,16 @@ mod tests {
         let personal: i64 = c.query_row("SELECT COUNT(*) FROM personal_txns WHERE id LIKE 'k666.r666_%'", [], |r| r.get(0)).unwrap();
         let backed: i64 = c.query_row("SELECT COUNT(*) FROM bank_txn_deleted_backup WHERE id LIKE 'r666_%' AND reason='moved_to_personal'", [], |r| r.get(0)).unwrap();
         assert_eq!((personal, backed), (4, 4), "each moved row is a personal row and has its backup");
+        let guess: String = c.query_row("SELECT status FROM bill_payments WHERE id='bp-r666-guess'", [], |r| r.get(0)).unwrap();
+        assert_eq!(guess, "rejected", "the guess is rejected, not deleted");
+        // A bill link a person confirmed is business work: that row stays.
+        row("r666_bill", "Everyday Card \u{00b7}\u{00b7}6660");
+        c.execute("INSERT INTO bill_payments (id, bill_id, bank_txn_id, period, amount, status, created_by, created_at, updated_at) \
+                   VALUES ('bp-r666-sure','bill-r666','r666_bill','',20.0,'confirmed','test','2026-11-10','2026-11-10')", []).unwrap();
+        assert_eq!(sweep(&c), 0);
+        assert!(on_books("r666_bill"));
+        c.execute("DELETE FROM bill_payments WHERE id LIKE 'bp-r666-%'", []).unwrap();
+        c.execute("DELETE FROM bank_txn WHERE id='r666_bill'", []).unwrap();
         // Another computer puts a new row on the books: the sweep takes it off.
         row("r666_late", "Everyday Card \u{00b7}\u{00b7}6660");
         assert!(sweep(&c) >= 1);

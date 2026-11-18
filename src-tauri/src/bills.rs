@@ -1061,6 +1061,18 @@ fn link(conn: &rusqlite::Connection, bill_id: &str, bank_txn_id: &str) -> Result
     Ok(())
 }
 
+/// R-667: take the automatic bill guesses off one bank row (each is rejected, never deleted), for a row that turns
+/// out to be personal spending: a guess nobody confirmed is not business work. Confirmed links are left alone.
+pub fn reject_guesses_for_txn(conn: &rusqlite::Connection, txn_id: &str) -> Result<usize, String> {
+    let ids: Vec<String> = {
+        let mut st = db(conn.prepare("SELECT id FROM bill_payments WHERE bank_txn_id=?1 AND status='auto'"))?;
+        let rows = db(st.query_map([txn_id], |r| r.get::<_, String>(0)))?;
+        db(rows.collect::<rusqlite::Result<Vec<_>>>())?
+    };
+    for id in &ids { set_link_status(conn, id, "rejected")?; }
+    Ok(ids.len())
+}
+
 /// Reject (unlink) or restore a payment link. A link is never deleted.
 fn set_link_status(conn: &rusqlite::Connection, pid: &str, status: &str) -> Result<(), String> {
     let Some((bill_id, txn_id, current)): Option<(String, String, String)> = db(conn
