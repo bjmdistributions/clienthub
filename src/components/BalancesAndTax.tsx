@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { api, BankBalance, FinancialsOverview, MoneyConfig, TaxMonths } from "../lib/api";
 import DriftPanel from "./DriftPanel";
+import AccountStatement from "./AccountStatement";
 import { fmtAmount } from "../lib/format";
 import { RefreshCw, CheckCircle2, AlertTriangle } from "lucide-react";
 import { toast } from "./Toast";
@@ -57,6 +58,7 @@ function Line({ label, value, strong, muted, tag }: { label: React.ReactNode; va
 
 export default function BalancesAndTax({ onCheckBooks, onOpenRow, onToBook }: { onCheckBooks?: () => void; onToBook?: () => void; onOpenRow?: (id: string, amount: number) => void }) {
   const [openDrift, setOpenDrift] = useState<string | null>(null);
+  const [statement, setStatement] = useState<BankBalance | null>(null); // R-667
   const [accounts, setAccounts] = useState<BankBalance[] | null>(null);
   const [lastSync, setLastSync] = useState<string | null>(null);
   const [ov, setOv] = useState<Overview | null>(null);
@@ -203,6 +205,10 @@ export default function BalancesAndTax({ onCheckBooks, onOpenRow, onToBook }: { 
                         </div>
                       </div>
                       <div className="flex items-center gap-1.5 flex-shrink-0 whitespace-nowrap">
+                        {a.drift != null && (
+                          <button onClick={() => setStatement(a)} className="text-[12px] font-medium text-ink-2 hover:opacity-70 mr-1"
+                            title="Every transaction with the balance after it, to hold against your bank">Statement</button>
+                        )}
                         {a.key === reserveKey && <StatusPill tone="accent">Tax savings</StatusPill>}
                         {a.drift == null ? null : Math.abs(a.drift) < 0.005
                           ? <StatusPill tone="success" title="The ledger agrees with the bank">Books agree</StatusPill>
@@ -215,7 +221,7 @@ export default function BalancesAndTax({ onCheckBooks, onOpenRow, onToBook }: { 
                   )).flatMap((row, i) => {
                     const a = rows[i];
                     return openDrift === a.label && a.drift != null && Math.abs(a.drift) >= 0.005
-                      ? [row, <DriftPanel key={a.key + "-why"} account={a.label} name={a.name} card={a.type === "credit"} onCheckBooks={onCheckBooks} onOpenRow={onOpenRow}
+                      ? [row, <DriftPanel key={a.key + "-why"} account={a.label} name={a.name} card={a.type === "credit"} onCheckBooks={onCheckBooks} onOpenRow={onOpenRow} onStatement={() => setStatement(a)}
                           onChanged={() => { setOpenDrift(null); load(); }} />]
                       : [row];
                   })}
@@ -225,6 +231,11 @@ export default function BalancesAndTax({ onCheckBooks, onOpenRow, onToBook }: { 
           })}
         </div>
       </section>
+
+      {statement && (
+        <AccountStatement account={statement.label} name={`${statement.name}${statement.mask ? ` ··${statement.mask}` : ""}`}
+          card={statement.type === "credit"} onClose={() => { setStatement(null); load(); }} onOpenRow={onOpenRow} />
+      )}
 
       {/* ── Tax savings ───────────────────────────────── */}
       <section className="min-w-0 border-t border-line pt-6">

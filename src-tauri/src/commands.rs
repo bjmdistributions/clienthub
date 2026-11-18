@@ -29023,6 +29023,108 @@ fn explain_bank_drift_inner(conn: &rusqlite::Connection, account: String) -> Res
     }))
 }
 
+/// R-667: the days a person read a balance off the bank's own site, per account: `{ label: { "YYYY-MM-DD": balance } }`.
+const STATEMENT_MARKS: &str = "statement_marks";
+
+fn statement_marks(conn: &rusqlite::Connection) -> serde_json::Map<String, Value> {
+    conn.query_row("SELECT value FROM settings WHERE key=?1", [STATEMENT_MARKS], |r| r.get::<_, String>(0)).ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok()).and_then(|v| v.as_object().cloned()).unwrap_or_default()
+}
+
+/// R-667 (Jack: "it doesn't give me a way to identify or scan through and cross check to see what the discrepancy
+/// is"): one account as a statement (`account_statement.rs`). Every posted row, newest first, with the balance after
+/// it counted back from the bank's balance today; pending rows and rows the bank took back apart; every day the
+/// bank's balance is known for (an imported statement's ending for a checking or savings account, or a day a person
+/// checked) held against the books; and, when one differs, the stretch of days the fault is in. `card` is what the
+/// screen knows the account to be (a card's imported statements are not held: theirs is what is owed, the other way
+/// round). Read only.
+#[tauri::command]
+pub async fn account_statement(account: String, card: bool) -> Result<Value, String> {
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    account_statement_inner(&conn, &account, card)
+}
+
+/// R-667: keep (or, with no balance, clear) what the bank's own site shows for the end of one day on one account.
+#[tauri::command]
+pub async fn account_statement_mark(account: String, date: String, balance: Option<f64>, card: bool) -> Result<Value, String> {
+    if !crate::employees::session_can_book_bank() {
+        return Err("You need Financials edit to do this.".into());
+    }
+    let day = date.get(..10).unwrap_or("").to_string();
+    if chrono::NaiveDate::parse_from_str(&day, "%Y-%m-%d").is_err() { return Err("Pick a day first.".into()); }
+    let mut all = { let conn = pool().get().map_err(|e| e.to_string())?; statement_marks(&conn) };
+    let mut mine = all.get(&account).and_then(|v| v.as_object().cloned()).unwrap_or_default();
+    match balance {
+        Some(b) if b.is_finite() => { mine.insert(day, json!((b * 100.0).round() / 100.0)); }
+        _ => { mine.remove(&day); }
+    }
+    all.insert(account.clone(), Value::Object(mine));
+    write_setting(STATEMENT_MARKS, &Value::Object(all).to_string())?;
+    let conn = pool().get().map_err(|e| e.to_string())?;
+    account_statement_inner(&conn, &account, card)
+}
+
+fn account_statement_inner(conn: &rusqlite::Connection, account: &str, card: bool) -> Result<Value, String> {
+    use crate::account_statement as stmt;
+    let aliases = account_alias_map();
+    let acct_of = |a: &str| aliases.get(a).cloned().unwrap_or_else(|| a.to_string());
+    let (recon, _) = reconcile_accounts_inner(conn, false)?;
+    let r = recon.iter().find(|r| r.account == account)
+        .ok_or_else(|| "That account is not connected on this computer.".to_string())?;
+    let sql = format!(
+        "SELECT id, COALESCE(posted_at,''), COALESCE(amount,0), COALESCE(direction,''), COALESCE(description,''), \
+                COALESCE(NULLIF(created_at,''), imported_at, ''), ({}), ({}) FROM bank_txn WHERE account_id=?1",
+        crate::bank_flags::pending("bank_txn"), crate::bank_flags::retracted("bank_txn"));
+    let rows: Vec<stmt::Row> = conn.prepare(&sql)
+        .and_then(|mut st| st.query_map([account], |x| Ok(stmt::Row {
+            id: x.get(0)?, date: x.get(1)?, amount: x.get(2)?, direction: x.get(3)?, description: x.get(4)?, came: x.get(5)?,
+            pending: x.get::<_, i64>(6)? != 0, retracted: x.get::<_, i64>(7)? != 0,
+        })).map(|it| it.filter_map(|x| x.ok()).collect()))
+        .map_err(|e| e.to_string())?;
+    let st = stmt::walk(r.bank_balance, rows);
+
+    // Every day the bank's own balance is known for.
+    let mut known: Vec<(String, f64, &str)> = Vec::new();
+    if !card {
+        let mask = crate::bank_dedup::label_mask(account).to_string();
+        let found: Vec<(String, String, f64)> = conn
+            .prepare("SELECT COALESCE(account_id,''), period_end, ending FROM bank_statement")
+            .and_then(|mut q| q.query_map([], |x| Ok((x.get(0)?, x.get(1)?, x.get(2)?))).map(|it| it.filter_map(|x| x.ok()).collect()))
+            .unwrap_or_default();
+        for (a, end, ending) in found {
+            let l = acct_of(&a);
+            if l == account || (!mask.is_empty() && crate::bank_dedup::label_mask(&l) == mask) { known.push((end, ending, "statement")); }
+        }
+    }
+    if let Some(mine) = statement_marks(conn).get(account).and_then(|v| v.as_object()) {
+        for (d, v) in mine { if let Some(b) = v.as_f64() { known.push((d.clone(), b, "you")); } }
+    }
+    let points = stmt::points(r.bank_balance, &st.lines, &known);
+    let window = stmt::window(&st.lines, &points);
+
+    // Rows the clean-up or the near-duplicate rule already takes for the extra copy of another.
+    let mut copies: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for d in crate::bank_near_dup::near_duplicates(&near_dup_rows(conn)?) { copies.insert(d.extra_id); }
+    for g in crate::bank_dedup::plan(&load_dedup_rows(conn)?, &aliases, false).groups { for rm in g.removals { copies.insert(rm.id); } }
+    let copies: Vec<&String> = st.lines.iter().map(|l| &l.id).filter(|id| copies.contains(*id)).collect();
+
+    Ok(json!({
+        "account": account,
+        "card": card,
+        "bank_balance": r.bank_balance,
+        "drift": r.drift,
+        "opening": st.opening,
+        "lines": st.lines,
+        "pending": st.pending,
+        "pending_total": st.pending_total,
+        "withdrawn": st.withdrawn,
+        "withdrawn_total": st.withdrawn_total,
+        "points": points,
+        "window": window,
+        "copies": copies,
+    }))
+}
+
 /// The check itself, read-only apart from the baselines it hands back for the caller to write
 /// (`None` when there is nothing to reconcile against). R-579: Check books reads it too, without
 /// writing baselines.

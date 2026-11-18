@@ -46,13 +46,15 @@ const KIND: Record<DriftCause["kind"], { title: (n: number) => string; fix: stri
   },
 };
 
-export default function DriftPanel({ account, name, card, onCheckBooks, onOpenRow, onChanged }: {
+export default function DriftPanel({ account, name, card, onCheckBooks, onOpenRow, onStatement, onChanged }: {
   account: string;
   name: string;
   /** A credit card: its balance is what is owed, so the sentences say so. */
   card?: boolean;
   onCheckBooks?: () => void;
   onOpenRow?: (id: string, amount: number) => void;
+  /** R-667: open the account's statement, every row with the balance after it. */
+  onStatement?: () => void;
   onChanged: () => void;
 }) {
   const [x, setX] = useState<DriftExplain | null>(null);
@@ -188,6 +190,7 @@ export default function DriftPanel({ account, name, card, onCheckBooks, onOpenRo
       <div className="flex items-center gap-2 flex-wrap border-t border-line pt-3">
         <Button size="sm" onClick={checkNow} disabled={!!busy}>{busy === "check" ? "Checking…" : "Check against bank now"}</Button>
         {onCheckBooks && <Button size="sm" onClick={onCheckBooks} disabled={!!busy}>Open Check books</Button>}
+        {onStatement && <Button size="sm" onClick={onStatement} disabled={!!busy}>Statement, day by day</Button>}
         <Button size="sm" variant={armed ? "danger" : "outline"} onClick={accept} disabled={!!busy}
           title="Use when every transaction above is answered, or the books are shown to be right">
           {armed ? "Click again: start this account's check from today" : "These books are right: start the check from today"}

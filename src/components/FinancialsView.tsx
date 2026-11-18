@@ -3642,7 +3642,7 @@ export default function FinancialsView() {
           accounts as the Ledger's category picker; nothing here reads any table
           other than bank_txn, so this figure and the Ledger's totals can never
           silently drift apart. */}
-      {tab === "accounts" && <AccountsView />}
+      {tab === "accounts" && <AccountsView onOpenRow={openLedgerRow} />}
       {tab === "personal" && personalOwner && <PersonalView />}
       {tab === "personal" && !personalOwner && <p className="ui-note">Personal spending is only for the workspace owner.</p>}
       {tab === "report" && <BalancesAndTax onToBook={() => setTab("tobook")} onCheckBooks={() => setTab("check")} onOpenRow={openLedgerRow} />}

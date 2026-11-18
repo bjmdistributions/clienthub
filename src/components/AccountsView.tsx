@@ -5,6 +5,7 @@ import { api, BankBalance, BankBrand } from "../lib/api";
 import { fmtAmount } from "../lib/format";
 import { toast } from "./Toast";
 import { Button } from "./ui";
+import AccountStatement from "./AccountStatement";
 
 // R-659 (Jack, 2026-11-16): "a nice ui where i can check all balances on all cards and accounts in real time. This
 // will display the banks logo and colors. the ui will match the dashboard ui look and will be in finacials tab."
@@ -41,7 +42,7 @@ function BankMark({ brand, institution }: { brand?: BankBrand; institution: stri
   );
 }
 
-function AccountCard({ a, brand }: { a: BankBalance; brand?: BankBrand }) {
+function AccountCard({ a, brand, onStatement }: { a: BankBalance; brand?: BankBrand; onStatement?: () => void }) {
   const credit = a.type === "credit";
   const owed = Math.abs(a.balance);
   const limit = credit && a.limit && a.limit > 0 ? a.limit : null;
@@ -73,12 +74,18 @@ function AccountCard({ a, brand }: { a: BankBalance; brand?: BankBrand }) {
         ) : a.available !== null && a.available !== undefined && Math.abs(a.available - a.balance) >= 0.005 ? (
           <div className="mt-1.5 text-[12px] text-muted tabular-nums">{fmtAmount(a.available)} available now</div>
         ) : null}
+        {onStatement && (
+          <button onClick={onStatement} className="ui-link mt-3 !text-[12.5px]" title="Every transaction with the balance after it, to hold against your bank">
+            Statement
+          </button>
+        )}
       </div>
     </div>
   );
 }
 
-export default function AccountsView() {
+export default function AccountsView({ onOpenRow }: { onOpenRow?: (id: string, amount: number) => void }) {
+  const [statement, setStatement] = useState<BankBalance | null>(null);
   const [accounts, setAccounts] = useState<BankBalance[] | null>(null);
   const [lastSync, setLastSync] = useState<string | null>(null);
   const [brands, setBrands] = useState<Record<string, BankBrand>>({});
@@ -163,11 +170,18 @@ export default function AccountsView() {
               {g.title} <span className="text-muted font-normal tabular-nums">{rows.length}</span>
             </h4>
             <div className="grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-3 gap-4">
-              {rows.map((a) => <AccountCard key={a.key} a={a} brand={a.item ? brands[a.item] : undefined} />)}
+              {rows.map((a) => (
+                <AccountCard key={a.key} a={a} brand={a.item ? brands[a.item] : undefined}
+                  onStatement={a.type === "depository" || a.type === "credit" ? () => setStatement(a) : undefined} />
+              ))}
             </div>
           </section>
         );
       })}
+      {statement && (
+        <AccountStatement account={statement.label} name={`${statement.name}${statement.mask ? ` ··${statement.mask}` : ""}`}
+          card={statement.type === "credit"} onClose={() => setStatement(null)} onOpenRow={onOpenRow} />
+      )}
     </div>
   );
 }

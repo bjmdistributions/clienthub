@@ -1240,6 +1240,31 @@ export interface DriftExplain {
   bank_check: { posted: number; exact: number; not_exact: number; checked_at: string | null } | null;
 }
 
+/** R-667: one row of an account's statement. `balance` is the account's balance after it (a card: negative is owed). */
+export interface StatementLine { id: string; date: string; description: string; amount: number; direction: string; balance: number | null }
+/** R-667: a day the bank's own balance is known for, held against the books. `gap` is bank less books. */
+export interface StatementPoint { date: string; bank: number; books: number; gap: number; source: "statement" | "you" }
+/** R-667: an account as a statement, counted back from the bank's balance today. */
+export interface AccountStatementData {
+  account: string;
+  card: boolean;
+  bank_balance: number;
+  drift: number;
+  /** The balance before the first row on the books. */
+  opening: number;
+  /** Posted rows, newest first. */
+  lines: StatementLine[];
+  pending: StatementLine[];
+  pending_total: number;
+  withdrawn: StatementLine[];
+  withdrawn_total: number;
+  points: StatementPoint[];
+  /** Where the books stop matching: after `after`, through `through` ("" = today). */
+  window: { after: string; through: string; gap: number; count: number; same_amount: string[] } | null;
+  /** Rows the clean-up or the near-duplicate rule takes for a second copy. */
+  copies: string[];
+}
+
 export interface PayoutTotal {
   name: string;
   is_business: boolean;
@@ -4808,6 +4833,11 @@ export const api = {
   reconcileAccounts: (rebaseline = false) => invoke<ReconAccount[]>("reconcile_accounts", { rebaseline }),
   /** R-622: why an account's books check is off, and starting it again from today's figures. */
   explainBankDrift: (account: string) => invoke<DriftExplain>("explain_bank_drift", { account }),
+  /** R-667: one account as a statement, every row with the balance after it. */
+  accountStatement: (account: string, card: boolean) => invoke<AccountStatementData>("account_statement", { account, card }),
+  /** R-667: keep (or clear, with null) what the bank's site shows for the end of one day. */
+  accountStatementMark: (account: string, date: string, balance: number | null, card: boolean) =>
+    invoke<AccountStatementData>("account_statement_mark", { account, date, balance, card }),
   acceptBankFigures: (account: string) => invoke<ReconAccount[]>("accept_bank_figures", { account }),
   /** R-618: every connected account with its balance and books check. */
   bankBalances: () => invoke<{ accounts: BankBalance[]; last_sync: string | null; reserve_key: string }>("bank_balances"),

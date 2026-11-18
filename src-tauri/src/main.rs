@@ -2,6 +2,7 @@
 
 mod ai;
 mod bank_declined;
+mod account_statement;
 mod bank_dedup;
 mod bank_feed;
 mod personal;
@@ -909,6 +910,8 @@ fn main() {
             bank_balances,
             accept_bank_figures,
             explain_bank_drift,
+            account_statement,
+            account_statement_mark,
             resync_all_completed_deals,
             set_deal_link_na,
             set_refund_done,
