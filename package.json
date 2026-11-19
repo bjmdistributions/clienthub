@@ -1,6 +1,6 @@
 {
   "name": "clienthub",
-  "version": "0.16.261",
+  "version": "0.16.262",
   "private": true,
   "type": "module",
   "scripts": {
