@@ -77,6 +77,14 @@ echo "src/components/ErrorBoundary.test.ts" >> "$allowlist"
 # This step was hidden behind a red Lint from 85fa14d4 to the fix, so these were never caught.
 echo "src/__r546-harness.tsx" >> "$allowlist"
 echo "src/__r642-harness.tsx" >> "$allowlist"
+# Deliberate exception (2026-11-19, R-678). A bank account's card colour is DATA, not styling: he picks it, it is
+# saved as a #RRGGBB string in the shared setting account_looks and sent to the phone, and the card must keep that
+# colour in every theme (a token would follow the theme). `src/lib/accountLooks.ts` holds the palette he picks from
+# (Apple's system colours) and the default card colour; its test checks text contrast on those values; the R-660
+# harness (DEV ONLY, never built) feeds a saved look and draws an invented logo on a canvas.
+echo "src/lib/accountLooks.ts" >> "$allowlist"
+echo "src/lib/accountLooks.test.ts" >> "$allowlist"
+echo "src/__r660-harness.tsx" >> "$allowlist"
 # Anchor each allowlisted path to the start of a `path:line:` hit so a
 # new file cannot slip through by containing an allowlisted name.
 patterns=$(mktemp)

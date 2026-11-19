@@ -178,7 +178,7 @@ function LookEditor({ a, mine, brand, onSaved, onClose }: {
               {brand?.color && swatch(brand.color, "The bank's own colour")}
               {CARD_COLOURS.map((c) => swatch(c.hex, c.name))}
               <label className="w-8 h-8 rounded-full ring-1 ring-line-3 flex items-center justify-center cursor-pointer relative overflow-hidden"
-                title="Any colour" style={{ background: "conic-gradient(#FF3B30, #FF9500, #FFCC00, #34C759, #30B0C7, #007AFF, #AF52DE, #FF2D55, #FF3B30)" }}>
+                title="Any colour" style={{ background: `conic-gradient(${CARD_COLOURS.slice(0, 8).map((c) => c.hex).concat(CARD_COLOURS[0].hex).join(", ")})` }}>
                 <input type="color" value={look.color} onChange={(e) => save({ color: e.target.value })}
                   className="absolute inset-0 opacity-0 cursor-pointer" aria-label="Any colour" />
               </label>
