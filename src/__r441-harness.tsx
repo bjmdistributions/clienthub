@@ -45,7 +45,10 @@ const add = (id: string, title: string, category: string, checklist_key: string,
 (async () => {
   add("d1", "CRT-61 resale certificate", "certificates", "resale_cert", "crt-61.pdf", "application/pdf", await sampleForm());
   add("d2", "General liability insurance", "licenses", "insurance", "coi.pdf", "application/pdf", await sampleForm(), "2026-11-01");
-  add("d3", "EIN letter", "tax", "ein_letter", "ein.pdf", "application/pdf", await sampleForm());
+  // R-680: ?case=noletter leaves the EIN letter off, to try Type it instead.
+  const noLetter = new URLSearchParams(location.search).get("case") === "noletter";
+  if (!noLetter) add("d3", "EIN letter", "tax", "ein_letter", "ein.pdf", "application/pdf", await sampleForm());
+  let einLocked = false;
   (window as any).__FIXTURE = (cmd: string, a: any) => {
     const d = a?.id ? docs.find((x) => x.id === a.id) : null;
     switch (cmd) {
@@ -65,6 +68,9 @@ const add = (id: string, title: string, category: string, checklist_key: string,
       }
       case "docs_update": Object.assign(d, a.patch); return { ok: true };
       case "docs_archive": d.archived = a.archived; return { ok: true };
+      case "ein_lock_status": return { locked: einLocked, plain: null };
+      case "ein_lock_save": (window as any).__einSaved = a; einLocked = true; return null;
+      case "ein_lock_open": return "12-3456789";
       case "docs_upload": {
         const id = "d" + (docs.length + 1);
         add(id, a.title, a.category, a.checklistKey, a.filename, "application/pdf", fromB64(a.bytesB64));

@@ -2488,7 +2488,8 @@ function CompanyTab() {
 // R-668: the EIN, locked under a password only you know (`ein_lock.rs`). Showing it and
 // copying it each ask for that password; once shown it hides itself after 30 seconds.
 // The password is never stored, so it cannot be read back from this computer or the server.
-export function EinLock({ onLocked }: { onLocked: () => void }) {
+// R-680: `startAdding` opens straight on the form when no EIN is saved yet (Type it on Documents).
+export function EinLock({ onLocked, startAdding }: { onLocked: () => void; startAdding?: boolean }) {
   const [status, setStatus] = useState<{ locked: boolean; plain: string | null } | null>(null);
   const [mode, setMode] = useState<"idle" | "unlock" | "set" | "forgot">("idle");
   const [want, setWant] = useState<"show" | "copy">("show");
@@ -2504,6 +2505,12 @@ export function EinLock({ onLocked }: { onLocked: () => void }) {
 
   const load = () => api.einLockStatus().then(setStatus).catch(() => setStatus({ locked: false, plain: null }));
   useEffect(() => { load(); }, []);
+  const started = useRef(false);
+  useEffect(() => {
+    if (!startAdding || started.current || !status) return;
+    started.current = true;
+    if (!status.locked) { setEin(status.plain ?? ""); setMode("set"); }
+  }, [startAdding, status]);
   useEffect(() => {
     if (!shown) return;
     const t = setTimeout(() => setShown(null), 30000);

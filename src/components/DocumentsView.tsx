@@ -9,6 +9,8 @@ import { Button, PageActions } from "./ui";
 import { toast } from "./Toast";
 import StatusPill from "./StatusPill";
 import { docsApi, type CompanyDoc } from "../lib/documentsApi";
+import { api } from "../lib/api";
+import { EinLock } from "./SettingsView";
 // @ts-expect-error plain JS module shared byte-for-byte with the phone (www/docsign.js)
 import { openDocEditor, DOC_CATEGORIES, DOC_CHECKLIST, expiryState } from "../lib/docsign.js";
 
@@ -47,6 +49,11 @@ export default function DocumentsView() {
   const [localCopy, setLocalCopy] = useState<{ folder: string; copied: number } | null>(null);
   const picker = useRef<HTMLInputElement>(null);
   const pendingSlot = useRef("");
+  // R-680: an EIN typed in (Settings, Company info) stands in for the IRS letter, for anyone without the paper.
+  const [einSaved, setEinSaved] = useState(false);
+  const [einOpen, setEinOpen] = useState(false);
+  const loadEin = () => api.einLockStatus().then((s) => setEinSaved(s.locked || !!s.plain)).catch(() => {});
+  useEffect(() => { loadEin(); }, []);
 
   const load = async () => {
     setError("");
@@ -172,21 +179,29 @@ export default function DocumentsView() {
       <section className="py-5 px-1" aria-label="Papers a company keeps on file">
         <div className="flex items-baseline justify-between gap-2 flex-wrap mb-2">
           <div className="text-[13px] font-medium text-ink">Papers a company keeps on file</div>
-          <div className="text-[12px] text-muted">{SLOTS.filter((s) => filled.has(s.key)).length} of {SLOTS.length} on file</div>
+          <div className="text-[12px] text-muted">{SLOTS.filter((s) => filled.has(s.key) || (s.key === "ein_letter" && einSaved)).length} of {SLOTS.length} on file</div>
         </div>
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-x-8">
           {SLOTS.map((s, i) => {
             const d = filled.get(s.key);
+            const ein = s.key === "ein_letter";
+            const typed = !d && ein && einSaved;
             return (
               <div key={s.key} className={`flex items-center gap-3 min-h-[56px] py-2 px-1 min-w-0 ${i > 0 ? "border-t border-line" : ""} ${i === 1 ? "xl:border-t-0" : ""}`}>
-                {d ? <Check size={16} className="flex-shrink-0 text-success-ink" /> : <FileText size={16} className="flex-shrink-0 text-faint" />}
+                {d || typed ? <Check size={16} className="flex-shrink-0 text-success-ink" /> : <FileText size={16} className="flex-shrink-0 text-faint" />}
                 <div className="flex-1 min-w-0">
                   <div className="truncate text-[14px] font-medium text-ink">{s.label}</div>
-                  <div className="truncate text-[12px] text-muted">{d ? d.title : s.hint}</div>
+                  <div className="truncate text-[12px] text-muted">
+                    {d ? d.title : typed ? "EIN typed in, no letter on file" : ein ? "No letter? Type the number instead. " + s.hint : s.hint}
+                  </div>
                 </div>
                 {d
                   ? <Button size="sm" onClick={() => setDetails(d)}>Open</Button>
-                  : <Button size="sm" icon={<Upload size={12} />} onClick={() => pick(s.key)}>Add</Button>}
+                  : typed
+                    ? <div className="flex gap-2"><Button size="sm" onClick={() => setEinOpen(true)}>Open</Button><Button size="sm" icon={<Upload size={12} />} onClick={() => pick(s.key)}>Add letter</Button></div>
+                    : ein
+                      ? <div className="flex gap-2"><Button size="sm" onClick={() => setEinOpen(true)}>Type it</Button><Button size="sm" icon={<Upload size={12} />} onClick={() => pick(s.key)}>Add</Button></div>
+                      : <Button size="sm" icon={<Upload size={12} />} onClick={() => pick(s.key)}>Add</Button>}
               </div>
             );
           })}
@@ -266,6 +281,12 @@ export default function DocumentsView() {
         )}
       </section>
 
+      {einOpen && (
+        <Drawer title="Your EIN" sub="The same EIN as Settings, Company info. One saved number, locked under a password." onClose={() => { setEinOpen(false); loadEin(); }}>
+          <EinLock startAdding onLocked={loadEin} />
+          <p className="text-[12px] text-muted mt-4">The IRS letter can be added later. If it is lost, the IRS sends a copy (a 147C letter) when asked.</p>
+        </Drawer>
+      )}
       {upload && <UploadDrawer file={upload.file} slot={upload.slot} onClose={() => setUpload(null)} onDone={async () => { setUpload(null); await load(); }} />}
       {details && (
         <DetailsDrawer doc={details} onClose={() => setDetails(null)} onDownload={download} onArchive={(d) => { setDetails(null); setArchived(d, true); }}
