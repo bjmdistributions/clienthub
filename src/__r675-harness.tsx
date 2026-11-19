@@ -13,6 +13,7 @@ const kase = q.get("case") || "photos";
 const now = new Date().toISOString();
 const requests = [
   { id: "ap_new", kind: "lot_feed_new", entity_id: "row_1", summary: "New from Muse: Sample ceramic mugs, $3.50 a unit", requested_by_name: null, created_at: now },
+  { id: "ap_new2", kind: "lot_feed_new", entity_id: "row_2", summary: "New from Muse: Sample linen towels, $2 a unit", requested_by_name: null, created_at: now },
   { id: "ap_rep", kind: "lot_feed_repeat", entity_id: "lot_9", summary: "Already listed: Sample canvas totes. Price changed from $4 a unit to $3 a unit", requested_by_name: null, created_at: now },
 ];
 const held = {
@@ -23,7 +24,7 @@ const held = {
     supplier: "Sample Supply Co", location: "Columbus, OH", details: {},
   },
   photo_links: kase === "none" ? 0 : 3,
-  photos: kase === "photos" ? ["r675/a.svg", "r675/b.svg"] : [],
+  photos: kase === "photos" ? ["r675/a.svg", "r675/b.svg", "r675/c.svg"] : [],
   photos_ready: kase !== "loading",
   photos_failed: kase === "photos" ? 1 : 0,
   server: `${location.origin}/harness`,
@@ -32,6 +33,8 @@ const held = {
 (window as any).__FIXTURE = (cmd: string, args: any) => {
   if (cmd === "list_approval_requests") return requests;
   if (cmd === "lot_feed" && args?.action === "held") return held;
+  if (cmd === "lot_feed" && args?.action === "order") { (window as any).__order = args.body.photos; return { photos: args.body.photos }; }
+  if (cmd === "resolve_approval_request") { (window as any).__resolved = [...((window as any).__resolved || []), args]; return null; }
   if (cmd === "plugin:event|listen") return 1;
   return [];
 };

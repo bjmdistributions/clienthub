@@ -5399,6 +5399,8 @@ export const api = {
   lotFeed: (action: "get" | "set" | "key" | "off", body?: { review?: boolean; expire_days?: number }) =>
     invoke<LotFeedSettings>("lot_feed", { action, body: body ?? null }),
   lotFeedHeld: (approvalId: string) => invoke<LotFeedHeld>("lot_feed", { action: "held", body: { approval_id: approvalId } }),
+  // R-676: the photos of a waiting upload in the order dragged; answers with them in that order.
+  lotFeedOrder: (approvalId: string, photos: string[]) => invoke<{ photos: string[] }>("lot_feed", { action: "order", body: { approval_id: approvalId, photos } }),
   listInboundLoads: () => invoke<InboundLoad[]>("list_inbound_loads"),
   approveInboundLoad: (id: string, lots: ApproveLotInput[]) => invoke<string[]>("approve_inbound_load", { id, lots }),
   rejectInboundLoad: (id: string) => invoke<void>("reject_inbound_load", { id }),

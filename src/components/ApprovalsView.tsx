@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api, isUnavailable, type ApprovalRequest, type Client, type LeadNotification, type LotDetails, type LotFeedHeld, type Me } from "../lib/api";
 import { lotPriceBlock } from "../lib/price";
@@ -150,8 +150,14 @@ function LeadDetails({ n }: { n: LeadNotification }) {
 
 /** R-675: a lot the upload address is holding, opened before it is added: its photos, large,
  *  and everything the sheet said about it. Add and Discard answer it, as the row used to. */
-function FeedReview({ a, onClose, onDecide }: { a: ApprovalRequest; onClose: () => void; onDecide: (approve: boolean) => Promise<void> }) {
+function FeedReview({ a, left, onClose, onDecide, onSkip }: {
+  a: ApprovalRequest; left: number; onClose: () => void; onDecide: (approve: boolean) => Promise<void>; onSkip: () => void;
+}) {
   const [held, setHeld] = useState<LotFeedHeld | null>(null);
+  // R-676: the photo being dragged, and the save of a new order (Add waits for it).
+  const [dragging, setDragging] = useState<number | null>(null);
+  const [over, setOver] = useState<number | null>(null);
+  const saving = useRef<Promise<unknown> | null>(null);
   const [error, setError] = useState("");
   const [shown, setShown] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -182,7 +188,45 @@ function FeedReview({ a, onClose, onDecide }: { a: ApprovalRequest; onClose: () 
     ["Location", d.location || ""],
     ["Category", d.category || ""],
   ] as [string, string][]).filter(([, v]) => v) : [];
-  const decide = async (approve: boolean) => { setBusy(true); await onDecide(approve); setBusy(false); };
+  const decide = async (approve: boolean) => { setBusy(true); if (saving.current) await saving.current; await onDecide(approve); setBusy(false); };
+  // R-676: a photo dropped on another takes its place; the first is the cover. Saved on the server at once.
+  const move = (from: number, to: number) => {
+    if (!held || from === to) return;
+    const was = held.photos;
+    const photos = was.slice();
+    const [p] = photos.splice(from, 1);
+    photos.splice(to, 0, p);
+    const viewing = was[shown];
+    setHeld({ ...held, photos });
+    setShown(Math.max(0, photos.indexOf(viewing)));
+    const save = api.lotFeedOrder(a.id, photos)
+      .catch((e) => { setHeld((h) => (h ? { ...h, photos: was } : h)); setError(String(e?.message || e || "Couldn't save the order.")); })
+      .finally(() => { if (saving.current === save) saving.current = null; });
+    saving.current = save;
+  };
+  // Pointer events on the window, not HTML drag and drop, which the Windows app window keeps for files.
+  const startDrag = (e: React.PointerEvent, from: number) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const x0 = e.clientX, y0 = e.clientY;
+    let moved = false, to = from;
+    const onMove = (ev: PointerEvent) => {
+      if (!moved && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 6) return;
+      if (!moved) { moved = true; setDragging(from); }
+      const el = document.elementFromPoint(ev.clientX, ev.clientY)?.closest("[data-fr-i]") as HTMLElement | null;
+      if (el) { to = Number(el.dataset.frI); setOver(to); }
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      setDragging(null); setOver(null);
+      if (moved) move(from, to); else setShown(from);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+  };
 
   let photoNote = "";
   if (held) {
@@ -198,7 +242,10 @@ function FeedReview({ a, onClose, onDecide }: { a: ApprovalRequest; onClose: () 
         <div className="flex items-start justify-between gap-3 mb-4">
           <div className="min-w-0">
             <h3 className="text-[18px] font-medium text-ink break-words">{d?.name || "New upload"}</h3>
-            <div className="ui-note mt-0.5">Sent to your upload address {new Date(a.created_at).toLocaleString()}. Nothing is in your inventory until you add it.</div>
+            <div className="ui-note mt-0.5">
+              Sent to your upload address {new Date(a.created_at).toLocaleString()}. Nothing is in your inventory until you add it.
+              {left > 0 && ` ${left} more ${left === 1 ? "lot is" : "lots are"} waiting after this one.`}
+            </div>
           </div>
           <button onClick={onClose} aria-label="Close" className="ui-ib flex-shrink-0"><X size={16} /></button>
         </div>
@@ -215,16 +262,20 @@ function FeedReview({ a, onClose, onDecide }: { a: ApprovalRequest; onClose: () 
                   className="block rounded-xl overflow-hidden bg-surface-2 ring-1 ring-line">
                   <img src={src(held.photos[shown])} alt={`Photo ${shown + 1} of ${held.photos.length}`} className="w-full h-[min(52vh,460px)] object-contain" />
                 </a>
-                {held.photos.length > 1 && (
+                {held.photos.length > 1 && (<>
                   <div className="flex flex-wrap gap-2 mt-2">
                     {held.photos.map((p, i) => (
-                      <button key={p} onClick={() => setShown(i)} aria-label={`Show photo ${i + 1}`}
-                        className={`w-16 h-16 rounded-lg overflow-hidden bg-surface-2 ring-1 ${i === shown ? "ring-ink" : "ring-line opacity-80 hover:opacity-100"}`}>
-                        <img src={src(p)} alt="" className="w-full h-full object-cover" />
+                      <button key={p} data-fr-i={i} aria-label={`Show photo ${i + 1}`}
+                        onPointerDown={(e) => startDrag(e, i)}
+                        onClick={(e) => { if (e.detail === 0) setShown(i); }}
+                        className={`relative w-16 h-16 rounded-lg overflow-hidden bg-surface-2 cursor-grab touch-none select-none ${over === i && dragging !== i ? "ring-2 ring-accent" : i === shown ? "ring-1 ring-ink" : "ring-1 ring-line opacity-80 hover:opacity-100"} ${dragging === i ? "opacity-40" : ""}`}>
+                        <img src={src(p)} alt="" draggable={false} className="w-full h-full object-cover pointer-events-none" />
+                        {i === 0 && <span className="absolute left-1 bottom-1 text-[11px] leading-none px-1.5 py-1 rounded bg-surface text-ink ring-1 ring-line">Cover</span>}
                       </button>
                     ))}
                   </div>
-                )}
+                  <div className="ui-note mt-2">Drag a photo to change the order. The first one is the cover.</div>
+                </>)}
               </>) : (
                 <div className="rounded-xl bg-surface-2 ring-1 ring-line h-[220px] flex items-center justify-center text-center text-[14px] text-muted px-6">
                   {photoNote || "No photos."}
@@ -249,6 +300,7 @@ function FeedReview({ a, onClose, onDecide }: { a: ApprovalRequest; onClose: () 
         )}
 
         <div className="flex gap-2 justify-end">
+          {left > 0 && <Button disabled={busy} onClick={onSkip} className="mr-auto">Skip for now</Button>}
           <Button disabled={busy} onClick={() => decide(false)}>Discard</Button>
           <Button variant="ink" disabled={busy || !held} onClick={() => decide(true)}>Add to inventory</Button>
         </div>
@@ -270,6 +322,8 @@ export function ApprovalsView({ me, notices }: { me?: Me | null; notices?: Notic
   const [selected, setSelected] = useState<ApprovalRequest | null>(null);
   const [reviewClient, setReviewClient] = useState<Client | null>(null);
   const [feedReview, setFeedReview] = useState<ApprovalRequest | null>(null);
+  // R-676: lots answered or skipped while looking through them, so the next one is a new one.
+  const feedDone = useRef<Set<string>>(new Set());
   const [opened, setOpened] = useState<string | null>(null);
 
   // Archive toggle — swaps the whole page to resolved (approved/rejected)
@@ -309,6 +363,11 @@ export function ApprovalsView({ me, notices }: { me?: Me | null; notices?: Notic
   }, [archived, resolvedList]);
 
   const changed = () => window.dispatchEvent(new CustomEvent("approvals-changed"));
+  // R-676: every lot the upload address is holding, oldest first, and the next one not yet looked at.
+  const lotsWaiting = useMemo(() => items.filter((x) => x.kind === "lot_feed_new")
+    .sort((x, y) => String(x.created_at).localeCompare(String(y.created_at))), [items]);
+  const lotsLeft = (after: string) => lotsWaiting.filter((x) => x.id !== after && !feedDone.current.has(x.id));
+  const nextLot = (after: string) => { feedDone.current.add(after); setFeedReview(lotsLeft(after)[0] ?? null); };
   const resolved = () => { setSelected(null); changed(); };
   const quick = async (id: string, approve: boolean) => {
     await api.resolveApprovalRequest(id, approve).catch(() => {});
@@ -474,6 +533,13 @@ export function ApprovalsView({ me, notices }: { me?: Me | null; notices?: Notic
         </div>
       ) : (
         <div>
+          {lotsWaiting.length > 0 && (
+            <div className="pb-4">
+              <button onClick={() => { feedDone.current = new Set(); setFeedReview(lotsWaiting[0]); }} className={BTN_SOLID}>
+                Look through {lotsWaiting.length} new {lotsWaiting.length === 1 ? "lot" : "lots"}
+              </button>
+            </div>
+          )}
           {urgent.length > 0 && (
             <section>
               <div className="hsep" />
@@ -526,8 +592,9 @@ export function ApprovalsView({ me, notices }: { me?: Me | null; notices?: Notic
       )}
       {selected && <ApprovalDetail a={selected} onClose={() => setSelected(null)} onResolved={resolved} />}
       {feedReview && (
-        <FeedReview a={feedReview} onClose={() => setFeedReview(null)}
-          onDecide={async (approve) => { await quick(feedReview.id, approve); setFeedReview(null); }} />
+        <FeedReview key={feedReview.id} a={feedReview} left={lotsLeft(feedReview.id).length} onClose={() => setFeedReview(null)}
+          onDecide={async (approve) => { await quick(feedReview.id, approve); nextLot(feedReview.id); }}
+          onSkip={() => nextLot(feedReview.id)} />
       )}
     </div>
   );

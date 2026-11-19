@@ -56,7 +56,7 @@ import { api, Me } from "./lib/api";
 import { billsApi } from "./lib/billsApi";
 import { can, canViewTab, canViewLogistics, isAdmin, isLogisticsOnly, isLogisticsOnlyTab } from "./lib/permissions";
 import { forgetTime24, loadTime24 } from "./lib/time24";
-import { bellCountOf, bellTitle, bellUrgentOf, canSeeTeamNotices } from "./lib/notices";
+import { bellCountOf, bellTitle, bellUrgentOf, canSeeTeamNotices, desktopNoticesOn } from "./lib/notices";
 import { confirmLeaveUnsaved } from "./lib/unsavedWork";
 import { tabSwitchAction, tabToShow } from "./lib/tabSwitch";
 import { useNotices } from "./lib/useNotices";
@@ -573,6 +573,19 @@ export default function App() {
       api.getPendingApprovals().catch(() => []),
     ]).then(([reqs, pend]) => {
       setApQueue({ pending: pend.length, requests: reqs.map((r) => ({ kind: r.kind })) });
+      // R-676: lots sent to the upload address and waiting for approval raise one alert on this computer.
+      const lots = reqs.filter((r) => r.kind === "lot_feed_new").map((r) => r.id);
+      const key = `ecliptr_feed_seen_${me?.id ?? ""}`;
+      let seen: string[] = [];
+      try { seen = JSON.parse(localStorage.getItem(key) || "[]"); } catch { seen = []; }
+      const fresh = lots.filter((id) => !seen.includes(id)).length;
+      try { localStorage.setItem(key, JSON.stringify(lots)); } catch { /* the alert may show again */ }
+      let store: Storage | null = null;
+      try { store = localStorage; } catch { store = null; }
+      if (fresh > 0 && desktopNoticesOn(store)) {
+        api.showDesktopNotification(fresh === 1 ? "1 new lot waiting for you" : `${fresh} new lots waiting for you`,
+          "Sent to your upload address. Open Notifications to look through them.").catch(() => {});
+      }
     }).catch(() => {});
     refresh();
     const onChanged = () => refresh();

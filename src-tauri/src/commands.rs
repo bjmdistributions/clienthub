@@ -10982,6 +10982,15 @@ pub async fn lot_feed(action: String, body: Option<Value>) -> Result<Value, Stri
             }
             http.get(format!("{base}/api/inventory/feed/held/{id}"))
         }
+        // R-676: the order the photos of a waiting upload were dragged into. The first is the cover.
+        "order" => {
+            let b = body.unwrap_or_else(|| json!({}));
+            let id = b.get("approval_id").and_then(|v| v.as_str()).unwrap_or("");
+            if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+                return Err("Unknown upload".into());
+            }
+            http.post(format!("{base}/api/inventory/feed/held/{id}/order")).json(&json!({ "photos": b.get("photos").cloned().unwrap_or(json!([])) }))
+        }
         _ => return Err("Unknown action".into()),
     };
     let resp = req.bearer_auth(&token).send().await.map_err(|e| e.to_string())?;
