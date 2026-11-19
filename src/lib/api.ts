@@ -335,6 +335,8 @@ export interface LeadNotification {
   /** R-460: the last eight are the team's logistics and bill notices (see lib/notices.ts). */
   kind: "supply_lead" | "supplier_profile" | "call_request" | "call_urgent" | "system"
     | "logistics_quote" | "carrier_due" | "carrier_overdue" | "bill_due" | "bill_overdue" | "bill_paid" | "logistics_pay_due" | "logistics_bol"
+    // R-681: a payment that looks like a bill (title "Is this a bill?"), asked about on Bills.
+    | "bill_found"
     // R-493: a new bank row a Plaid sync brought in (title "New deposit" or "New charge", body the amount).
     | "bank_txn"
     // R-496: a deal was completed (title "Deal completed", payload carries the deal and its invoice number).

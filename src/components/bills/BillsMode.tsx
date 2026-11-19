@@ -109,33 +109,56 @@ function Found({ cands, admin, onTrack, onIgnore }: {
   cands: BillCandidate[]; admin: boolean; onTrack: (c: BillCandidate) => void; onIgnore: (c: BillCandidate) => void;
 }) {
   const [all, setAll] = useState(false);
+  const [open, setOpen] = useState<string | null>(null);
   const shown = all ? cands : cands.slice(0, 3);
+  // R-681: each one is asked as a question, with the payments it was found from one press away.
   return (
-    <Card title="Found in your bank" sub="Payments that repeat on a schedule and are not tracked yet">
+    <Card title="Is this a bill?" sub="These payments repeat on a schedule and are not tracked yet. Say which ones are bills.">
       <div>
-        {shown.map((c) => (
-          <div key={c.key} className="flex items-center gap-3 py-3 min-w-0 border-t border-line">
-            <BillLogo name={c.name} size={36} />
-            <div className="min-w-0 flex-1">
-              <div className="text-[14px] font-medium text-ink truncate">{c.name}</div>
-              <div className="ui-note">{c.why}</div>
-            </div>
-            <div className="text-right flex-shrink-0 hidden sm:block">
-              <div className="text-[14px] font-medium text-ink tabular-nums">{fmtAmount(c.amount)}</div>
-              <div className="ui-note">{cadenceLabel(c.cadence)}</div>
-            </div>
-            {admin && (
-              <div className="flex items-center gap-1.5 flex-shrink-0">
-                <button onClick={() => onTrack(c)} className="ui-btn ui-btn-ink ui-btn-sm whitespace-nowrap">
-                  Track it
-                </button>
-                <button onClick={() => onIgnore(c)} className="ui-btn ui-btn-sm whitespace-nowrap">
-                  Not a bill
-                </button>
+        {shown.map((c, i) => {
+          const id = `${c.key}:${i}`;
+          const pays = c.payments ?? [];
+          return (
+            <div key={id} className="py-3 min-w-0 border-t border-line">
+              <div className="flex items-center gap-3 min-w-0">
+                <BillLogo name={c.name} size={36} />
+                <div className="min-w-0 flex-1">
+                  <div className="text-[14px] font-medium text-ink truncate">{c.name}</div>
+                  <div className="ui-note">{c.why}</div>
+                  {pays.length > 0 && (
+                    <button onClick={() => setOpen(open === id ? null : id)} className="ui-link text-[13px] mt-1">
+                      {open === id ? "Hide the payments" : `See the ${pays.length} payments`}
+                    </button>
+                  )}
+                </div>
+                <div className="text-right flex-shrink-0 hidden sm:block">
+                  <div className="text-[14px] font-medium text-ink tabular-nums">{c.amount > 0 ? fmtAmount(c.amount) : "Varies"}</div>
+                  <div className="ui-note">{cadenceLabel(c.cadence)}</div>
+                </div>
+                {admin && (
+                  <div className="flex items-center gap-1.5 flex-shrink-0">
+                    <button onClick={() => onTrack(c)} className="ui-btn ui-btn-ink ui-btn-sm whitespace-nowrap">
+                      Yes, track it
+                    </button>
+                    <button onClick={() => onIgnore(c)} className="ui-btn ui-btn-sm whitespace-nowrap">
+                      Not a bill
+                    </button>
+                  </div>
+                )}
               </div>
-            )}
-          </div>
-        ))}
+              {open === id && (
+                <div className="mt-2 ml-[48px] max-w-[360px]">
+                  {[...pays].reverse().map((p, j) => (
+                    <div key={j} className="flex justify-between gap-3 text-[13px] py-1 border-t border-line first:border-t-0">
+                      <span className="text-muted">{longDay(p.posted_at)}</span>
+                      <span className="text-ink tabular-nums">{fmtAmount(p.amount)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
       {cands.length > 3 && (
         <button onClick={() => setAll((v) => !v)} className="ui-link border-t border-line w-full pt-3 pb-1">

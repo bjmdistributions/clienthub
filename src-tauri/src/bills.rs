@@ -617,7 +617,8 @@ fn get_json(conn: &rusqlite::Connection, id: &str, today: NaiveDate) -> Result<V
 
 fn candidates(conn: &rusqlite::Connection, today: NaiveDate) -> Result<Vec<core::Candidate>, String> {
     let bills: Vec<core::Bill> = load_bills(conn)?.iter().map(|b| b.to_core()).collect();
-    let txns = load_txns(conn, &since(today, 400))?;
+    // R-681: two years back, so a yearly bill is seen twice.
+    let txns = load_txns(conn, &since(today, 800))?;
     Ok(core::detect(&txns, &bills, today))
 }
 
@@ -629,6 +630,7 @@ fn detect_json(conn: &rusqlite::Connection, today: NaiveDate) -> Result<Value, S
             "tolerance_pct": c.tolerance_pct, "anchor": c.anchor, "next_due": c.next_due,
             "category": c.category, "count": c.count, "first_paid": c.first_paid,
             "last_paid": c.last_paid, "monthly": c.monthly, "why": c.why,
+            "payments": c.payments.iter().map(|(d, a)| json!({ "posted_at": d, "amount": a })).collect::<Vec<_>>(),
         }))
         .collect();
     Ok(json!({ "candidates": list }))

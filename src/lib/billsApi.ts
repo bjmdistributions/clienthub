@@ -150,6 +150,8 @@ export interface BillCandidate {
   monthly: number;
   /** A plain sentence saying why it looks like a bill. */
   why: string;
+  /** R-681: the payments it was found from, oldest first (absent from an older server). */
+  payments?: { posted_at: string; amount: number }[];
 }
 
 export interface PickTxn {

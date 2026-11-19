@@ -848,6 +848,8 @@ pub struct Candidate {
     pub last_paid: String,
     pub monthly: f64,
     pub txn_ids: Vec<String>,
+    /// R-681: the payments it was found from, (YYYY-MM-DD, amount), oldest first.
+    pub payments: Vec<(String, f64)>,
     /// One plain sentence on why this looks like a bill.
     pub why: String,
 }
@@ -867,6 +869,8 @@ fn cadence_of_gap(days: f64) -> Option<&'static str> {
         d if (12.0..=16.0).contains(&d) => Some("biweekly"),
         d if (26.0..=35.0).contains(&d) => Some("monthly"),
         d if (80.0..=100.0).contains(&d) => Some("quarterly"),
+        d if (170.0..=195.0).contains(&d) => Some("semiannual"),
+        d if (350.0..=380.0).contains(&d) => Some("annual"),
         _ => None,
     }
 }
@@ -877,6 +881,8 @@ fn in_band(gap: i64, cadence: &str) -> bool {
         "biweekly" => (11..=17).contains(&gap),
         "monthly" => (24..=38).contains(&gap),
         "quarterly" => (75..=105).contains(&gap),
+        "semiannual" => (160..=205).contains(&gap),
+        "annual" => (335..=395).contains(&gap),
         _ => false,
     }
 }
@@ -908,178 +914,263 @@ fn money(v: f64) -> String {
     format!("${out}")
 }
 
-/// Payments that repeat: same payee words, a similar amount, a regular gap. At least three
-/// payments, the latest recent enough that the bill is still running. Payee words already
-/// used by a bill (active, archived or a dismissed suggestion) are skipped.
+/// US state codes. A card charge often ends with one ("NETFLIX.COM LOS GATOS CA").
+const STATES: &[&str] = &[
+    "al", "ak", "az", "ar", "ca", "co", "ct", "de", "dc", "fl", "ga", "hi", "id", "il", "in", "ia", "ks",
+    "ky", "la", "me", "md", "ma", "mi", "mn", "ms", "mo", "mt", "ne", "nv", "nh", "nj", "nm", "ny", "nc",
+    "nd", "oh", "ok", "or", "pa", "ri", "sc", "sd", "tn", "tx", "ut", "vt", "va", "wa", "wv", "wi", "wy",
+];
+
+/// R-681: the words detection groups payments by: `payee_key` with a trailing state code dropped, so
+/// "Netflix Los Gatos CA" and "Netflix Los Gatos" are one payee.
+fn group_key(s: &str) -> String {
+    let mut w: Vec<String> = payee_key(s).split(' ').filter(|w| !w.is_empty()).map(String::from).collect();
+    while w.len() > 1 && STATES.contains(&w[w.len() - 1].as_str()) {
+        w.pop();
+    }
+    w.join(" ")
+}
+
+/// `key` begins with every word of `prefix`, in order.
+fn starts_with_words(key: &str, prefix: &str) -> bool {
+    let (k, p): (Vec<&str>, Vec<&str>) = (key.split(' ').collect(), prefix.split(' ').collect());
+    !prefix.is_empty() && p.len() <= k.len() && k[..p.len()] == p[..]
+}
+
+/// One payee's payments split into amount clusters (two policies with one insurer), each within
+/// 30% of its own median.
+fn amount_clusters<'a>(rows: &[&'a Txn]) -> Vec<Vec<&'a Txn>> {
+    let mut sorted = rows.to_vec();
+    sorted.sort_by(|a, b| a.amount.partial_cmp(&b.amount).unwrap_or(std::cmp::Ordering::Equal));
+    let mut clusters: Vec<Vec<&Txn>> = Vec::new();
+    for t in sorted {
+        match clusters.last_mut() {
+            Some(c) if {
+                let mut a: Vec<f64> = c.iter().map(|x| x.amount).collect();
+                let m = median(&mut a);
+                m > 0.0 && (t.amount - m).abs() / m <= 0.30
+            } => c.push(t),
+            _ => clusters.push(vec![t]),
+        }
+    }
+    clusters
+}
+
+/// The payee's clusters, and when none of them is a bill, all of its payments as one bill whose
+/// amount varies (a power bill that swings more than 30%).
+fn suggest_payee(key: &str, rows: &[&Txn], today: NaiveDate) -> Vec<Candidate> {
+    let found: Vec<Candidate> = amount_clusters(rows).into_iter().filter_map(|c| suggest(key, c, today, false)).collect();
+    if !found.is_empty() || rows.len() < 3 {
+        return found;
+    }
+    suggest(key, rows.to_vec(), today, true).into_iter().collect()
+}
+
+/// Payments that repeat: same payee words, a similar amount, a regular gap, the latest recent
+/// enough that the bill is still running. Payee words already used by a bill (active, archived or
+/// a dismissed suggestion) are skipped.
+///
+/// R-681: two payments are enough when they are the same amount (within 5%) a month or more apart;
+/// every six months and yearly are found; a varying bill is found as one; a payee whose card
+/// charges carry different tails ("Netflix Los Gatos", "Netflix") is tried as one when no tail
+/// alone is a bill.
 pub fn detect(txns: &[Txn], bills: &[Bill], today: NaiveDate) -> Vec<Candidate> {
-    let taken: HashSet<String> = bills.iter().map(|b| payee_key(&b.payee_match)).collect();
+    let taken: Vec<String> = bills.iter().map(|b| group_key(&b.payee_match)).filter(|k| !k.is_empty()).collect();
     let mut groups: HashMap<String, Vec<&Txn>> = HashMap::new();
     for t in txns {
         if !eligible(t) || !t.bill_id.is_empty() || parse_day(&t.posted_at).is_none() {
             continue;
         }
         let src = if t.payee.trim().is_empty() { &t.memo } else { &t.payee };
-        let key = payee_key(src);
-        if key.is_empty() || taken.contains(&key) {
+        let key = group_key(src);
+        if key.is_empty() || taken.iter().any(|k| starts_with_words(&key, k)) {
             continue;
         }
         groups.entry(key).or_default().push(t);
     }
     let mut out = Vec::new();
-    for (key, rows) in groups {
-        if rows.len() < 3 {
+    let mut hit: HashSet<&str> = HashSet::new();
+    for (key, rows) in &groups {
+        let found = suggest_payee(key, rows, today);
+        if !found.is_empty() {
+            hit.insert(key.as_str());
+        }
+        out.extend(found);
+    }
+    // One payee under several tails: try them together, named by the words they share. Only when no
+    // tail was a bill on its own and no bill already starts with that payee's first word.
+    let mut families: HashMap<&str, Vec<&str>> = HashMap::new();
+    for key in groups.keys() {
+        let first = key.split(' ').next().unwrap_or("");
+        if first.len() >= 4 {
+            families.entry(first).or_default().push(key.as_str());
+        }
+    }
+    for (first, keys) in families {
+        if keys.len() < 2
+            || keys.iter().any(|k| hit.contains(k))
+            || taken.iter().any(|t| t.split(' ').next() == Some(first))
+        {
             continue;
         }
-        // Split one payee into amount clusters (two policies with one insurer), each
-        // within 30% of its own median.
-        let mut sorted = rows.clone();
-        sorted.sort_by(|a, b| a.amount.partial_cmp(&b.amount).unwrap_or(std::cmp::Ordering::Equal));
-        let mut clusters: Vec<Vec<&Txn>> = Vec::new();
-        for t in sorted {
-            match clusters.last_mut() {
-                Some(c) if {
-                    let mut a: Vec<f64> = c.iter().map(|x| x.amount).collect();
-                    let m = median(&mut a);
-                    m > 0.0 && (t.amount - m).abs() / m <= 0.30
-                } => c.push(t),
-                _ => clusters.push(vec![t]),
-            }
-        }
-        for mut c in clusters {
-            if c.len() < 3 {
-                continue;
-            }
-            c.sort_by(|a, b| a.posted_at.cmp(&b.posted_at));
-            // R-453: a first payment off the usual day (rent paid on the 20th, then the 1st every
-            // month after) must not hide the schedule. Try every payment, then all but the first.
-            let mut off_first: Option<NaiveDate> = None;
-            let mut found: Option<&'static str> = None;
-            for drop in 0..=1usize {
-                if c.len() - drop < 3 {
-                    break;
-                }
-                let dates: Vec<NaiveDate> = c[drop..].iter().filter_map(|t| parse_day(&t.posted_at)).collect();
-                let gaps: Vec<i64> = dates.windows(2).map(|w| (w[1] - w[0]).num_days()).collect();
-                let mut gf: Vec<f64> = gaps.iter().map(|g| *g as f64).collect();
-                let Some(cad) = cadence_of_gap(median(&mut gf)) else { continue };
-                let regular = gaps.iter().filter(|g| in_band(**g, cad)).count();
-                // With the odd first payment kept, every later gap must be regular.
-                let need = if drop == 0 { gaps.len() as f64 * 0.6 } else { gaps.len() as f64 };
-                if (regular as f64) < need {
-                    continue;
-                }
-                if drop == 1 {
-                    off_first = parse_day(&c[0].posted_at);
-                    c.remove(0);
-                }
-                found = Some(cad);
+        let split: Vec<Vec<&str>> = keys.iter().map(|k| k.split(' ').collect()).collect();
+        let mut shared: Vec<&str> = Vec::new();
+        for (i, w) in split[0].iter().enumerate() {
+            if split.iter().all(|s| s.get(i) == Some(w)) {
+                shared.push(w);
+            } else {
                 break;
             }
-            let Some(cadence) = found else { continue };
-            let dates: Vec<NaiveDate> = c.iter().filter_map(|t| parse_day(&t.posted_at)).collect();
-            let last = *dates.last().unwrap();
-            let (sd, sm) = step_of(cadence);
-            let step_days = if sd > 0 { sd } else { sm * 31 };
-            if (today - last).num_days() > step_days * 2 + 15 {
-                continue;
-            }
-            let mut first = dates[0];
-            let mut start = 0usize;
-            let anchor = if sd > 0 {
-                first
-            } else {
-                // The day of the month it is usually paid on.
-                let mut by_day: HashMap<u32, usize> = HashMap::new();
-                for d in &dates {
-                    *by_day.entry(d.day()).or_default() += 1;
-                }
-                let day = by_day.iter().max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0))).map(|(d, _)| *d).unwrap_or(first.day());
-                // The schedule starts at the first payment that lands near that day; one before it
-                // (kept in the cluster with the 60% rule) is an extra charge, like a dropped one.
-                let (early, late) = window_of(cadence);
-                let near = |p: NaiveDate| -> Option<NaiveDate> {
-                    let base = NaiveDate::from_ymd_opt(p.year(), p.month(), day.min(days_in_month(p.year(), p.month())))?;
-                    [add_months_keep_day(base, -1), base, add_months_keep_day(base, 1)]
-                        .into_iter()
-                        .map(|a| NaiveDate::from_ymd_opt(a.year(), a.month(), day.min(days_in_month(a.year(), a.month()))).unwrap_or(a))
-                        .find(|a| (p - *a).num_days() >= -early && (p - *a).num_days() <= late)
-                };
-                start = dates.iter().position(|p| near(*p).is_some()).unwrap_or(0);
-                let a0 = near(dates[start]).unwrap_or(dates[start]);
-                // Paid a few days ahead of the first due date, with an on-time payment for it after:
-                // the on-time one pays it and the early one is an extra charge.
-                if dates[start] < a0 && start + 1 < dates.len() && near(dates[start + 1]) == Some(a0) {
-                    start += 1;
-                }
-                if start > 0 && off_first.is_none() {
-                    off_first = Some(dates[0]);
-                }
-                first = dates[start];
-                near(first).unwrap_or(first)
-            };
-            let c: Vec<&Txn> = c[start..].to_vec();
-            // The amount and its band come from the payments on the schedule, not the odd first one.
-            let mut amts: Vec<f64> = c.iter().map(|t| t.amount).collect();
-            let amount = round2(median(&mut amts));
-            let spread = c.iter().map(|t| (t.amount - amount).abs() / amount.max(0.01)).fold(0.0, f64::max);
-            let tolerance = ((spread * 100.0 / 5.0).ceil() * 5.0).clamp(5.0, 30.0);
-            let probe = Bill {
-                id: String::new(),
-                name: String::new(),
-                payee_match: key.clone(),
-                amount,
-                tolerance_pct: tolerance,
-                cadence: cadence.into(),
-                anchor: fmt_day(anchor),
-                status: "active".into(),
-            };
-            // The due date after the one the latest payment paid.
-            let paid_through = period_for(&probe, last).unwrap_or(last);
-            let k = nearest_index(anchor, cadence, paid_through);
-            let next = occurrence(anchor, cadence, k + 1);
-            let mut cats: HashMap<&str, usize> = HashMap::new();
-            for t in &c {
-                if !t.category.is_empty() {
-                    *cats.entry(t.category.as_str()).or_default() += 1;
-                }
-            }
-            let category = cats.into_iter().max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(a.0))).map(|(k, _)| k.to_string()).unwrap_or_default();
-            let every = match cadence {
-                "weekly" => "every week".to_string(),
-                "biweekly" => "every two weeks".to_string(),
-                "quarterly" => "every three months".to_string(),
-                _ => format!("every month, usually on the {}", ordinal(anchor.day())),
-            };
-            let mut why = format!(
-                "Paid {} times since {}, {}, about {} each time.",
-                c.len(),
-                first.format("%b %-d, %Y"),
-                every,
-                money(amount)
-            );
-            if let Some(o) = off_first {
-                why.push_str(&format!(" The first payment, on {}, was off that day and counts as an extra charge.", o.format("%b %-d")));
-            }
-            out.push(Candidate {
-                name: title_case(&key),
-                key: key.clone(),
-                cadence: cadence.into(),
-                amount,
-                tolerance_pct: tolerance,
-                anchor: fmt_day(anchor),
-                next_due: fmt_day(next),
-                category,
-                count: c.len(),
-                first_paid: fmt_day(first),
-                last_paid: fmt_day(last),
-                monthly: monthly_equivalent(amount, cadence),
-                txn_ids: c.iter().map(|t| t.id.clone()).collect(),
-                why,
-            });
         }
+        let rows: Vec<&Txn> = keys.iter().flat_map(|k| groups[*k].iter().copied()).collect();
+        out.extend(suggest_payee(&shared.join(" "), &rows, today));
     }
     out.sort_by(|a, b| b.monthly.partial_cmp(&a.monthly).unwrap_or(std::cmp::Ordering::Equal).then(a.key.cmp(&b.key)));
     out
+}
+
+/// One cluster of a payee's payments as a bill, or None when it does not repeat on a schedule.
+/// `varying`: the cluster is every payment to the payee and its amount may swing.
+fn suggest(key: &str, mut c: Vec<&Txn>, today: NaiveDate, varying: bool) -> Option<Candidate> {
+    if c.len() < 2 {
+        return None;
+    }
+    c.sort_by(|a, b| a.posted_at.cmp(&b.posted_at));
+    // R-453: a first payment off the usual day (rent paid on the 20th, then the 1st every
+    // month after) must not hide the schedule. Try every payment, then all but the first.
+    let mut off_first: Option<NaiveDate> = None;
+    let mut found: Option<&'static str> = None;
+    for drop in 0..=1usize {
+        if c.len() - drop < 2 {
+            break;
+        }
+        let dates: Vec<NaiveDate> = c[drop..].iter().filter_map(|t| parse_day(&t.posted_at)).collect();
+        let gaps: Vec<i64> = dates.windows(2).map(|w| (w[1] - w[0]).num_days()).collect();
+        let mut gf: Vec<f64> = gaps.iter().map(|g| *g as f64).collect();
+        let Some(cad) = cadence_of_gap(median(&mut gf)) else { continue };
+        let regular = gaps.iter().filter(|g| in_band(**g, cad)).count();
+        // With the odd first payment kept, every later gap must be regular.
+        let need = if drop == 0 { gaps.len() as f64 * 0.6 } else { gaps.len() as f64 };
+        if (regular as f64) < need {
+            continue;
+        }
+        if drop == 1 {
+            off_first = parse_day(&c[0].posted_at);
+            c.remove(0);
+        }
+        found = Some(cad);
+        break;
+    }
+    let cadence = found?;
+    let dates: Vec<NaiveDate> = c.iter().filter_map(|t| parse_day(&t.posted_at)).collect();
+    let last = *dates.last()?;
+    let (sd, sm) = step_of(cadence);
+    let step_days = if sd > 0 { sd } else { sm * 31 };
+    // Every six months or yearly: still running when the latest is at most one step and two months old.
+    let stale = if sm >= 6 { step_days + 60 } else { step_days * 2 + 15 };
+    if (today - last).num_days() > stale {
+        return None;
+    }
+    let mut first = dates[0];
+    let mut start = 0usize;
+    let anchor = if sd > 0 {
+        first
+    } else {
+        // The day of the month it is usually paid on.
+        let mut by_day: HashMap<u32, usize> = HashMap::new();
+        for d in &dates {
+            *by_day.entry(d.day()).or_default() += 1;
+        }
+        let day = by_day.iter().max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0))).map(|(d, _)| *d).unwrap_or(first.day());
+        // The schedule starts at the first payment that lands near that day; one before it
+        // (kept in the cluster with the 60% rule) is an extra charge, like a dropped one.
+        let (early, late) = window_of(cadence);
+        let near = |p: NaiveDate| -> Option<NaiveDate> {
+            let base = NaiveDate::from_ymd_opt(p.year(), p.month(), day.min(days_in_month(p.year(), p.month())))?;
+            [add_months_keep_day(base, -1), base, add_months_keep_day(base, 1)]
+                .into_iter()
+                .map(|a| NaiveDate::from_ymd_opt(a.year(), a.month(), day.min(days_in_month(a.year(), a.month()))).unwrap_or(a))
+                .find(|a| (p - *a).num_days() >= -early && (p - *a).num_days() <= late)
+        };
+        start = dates.iter().position(|p| near(*p).is_some()).unwrap_or(0);
+        let a0 = near(dates[start]).unwrap_or(dates[start]);
+        // Paid a few days ahead of the first due date, with an on-time payment for it after:
+        // the on-time one pays it and the early one is an extra charge.
+        if dates[start] < a0 && start + 1 < dates.len() && near(dates[start + 1]) == Some(a0) {
+            start += 1;
+        }
+        if start > 0 && off_first.is_none() {
+            off_first = Some(dates[0]);
+        }
+        first = dates[start];
+        near(first).unwrap_or(first)
+    };
+    let c: Vec<&Txn> = c[start..].to_vec();
+    // R-681: two payments are a bill only when they are the same amount a month or more apart; a
+    // varying bill needs three.
+    if c.len() < 2 || (c.len() < 3 && (varying || sd > 0 || (c[0].amount - c[1].amount).abs() > c[0].amount.max(c[1].amount) * 0.05)) {
+        return None;
+    }
+    // The amount and its band come from the payments on the schedule, not the odd first one.
+    let mut amts: Vec<f64> = c.iter().map(|t| t.amount).collect();
+    let typical = round2(median(&mut amts));
+    let spread = c.iter().map(|t| (t.amount - typical).abs() / typical.max(0.01)).fold(0.0, f64::max);
+    let (lo, hi) = c.iter().fold((f64::MAX, 0.0f64), |(lo, hi), t| (lo.min(t.amount), hi.max(t.amount)));
+    // A varying bill keeps a band up to 50%; past that it is tracked as "varies" (amount 0), which
+    // checks only the words and the date.
+    let tolerance = ((spread * 100.0 / 5.0).ceil() * 5.0).clamp(5.0, if varying { 50.0 } else { 30.0 });
+    let amount = if varying && spread > 0.5 { 0.0 } else { typical };
+    let probe = Bill {
+        id: String::new(),
+        name: String::new(),
+        payee_match: key.to_string(),
+        amount,
+        tolerance_pct: tolerance,
+        cadence: cadence.into(),
+        anchor: fmt_day(anchor),
+        status: "active".into(),
+    };
+    // The due date after the one the latest payment paid.
+    let paid_through = period_for(&probe, last).unwrap_or(last);
+    let k = nearest_index(anchor, cadence, paid_through);
+    let next = occurrence(anchor, cadence, k + 1);
+    let mut cats: HashMap<&str, usize> = HashMap::new();
+    for t in &c {
+        if !t.category.is_empty() {
+            *cats.entry(t.category.as_str()).or_default() += 1;
+        }
+    }
+    let category = cats.into_iter().max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(a.0))).map(|(k, _)| k.to_string()).unwrap_or_default();
+    let every = match cadence {
+        "weekly" => "every week".to_string(),
+        "biweekly" => "every two weeks".to_string(),
+        "quarterly" => "every three months".to_string(),
+        "semiannual" => "every six months".to_string(),
+        "annual" => "every year".to_string(),
+        _ => format!("every month, usually on the {}", ordinal(anchor.day())),
+    };
+    let each = if varying { format!("between {} and {}", money(lo), money(hi)) } else { format!("about {} each time", money(typical)) };
+    let mut why = format!("Paid {} times since {}, {}, {}.", c.len(), first.format("%b %-d, %Y"), every, each);
+    if let Some(o) = off_first {
+        why.push_str(&format!(" The first payment, on {}, was off that day and counts as an extra charge.", o.format("%b %-d")));
+    }
+    Some(Candidate {
+        name: title_case(key),
+        key: key.to_string(),
+        cadence: cadence.into(),
+        amount,
+        tolerance_pct: tolerance,
+        anchor: fmt_day(anchor),
+        next_due: fmt_day(next),
+        category,
+        count: c.len(),
+        first_paid: fmt_day(first),
+        last_paid: fmt_day(last),
+        monthly: monthly_equivalent(typical, cadence),
+        txn_ids: c.iter().map(|t| t.id.clone()).collect(),
+        payments: c.iter().map(|t| (fmt_day(parse_day(&t.posted_at).unwrap_or(first)), t.amount)).collect(),
+        why,
+    })
 }
 
 // --------------------------------------------------------------------------- spending
@@ -1610,6 +1701,76 @@ mod tests {
     }
 
     #[test]
+    fn r681_two_payments_of_one_amount_a_month_apart_are_asked_about() {
+        let two = vec![out("1", "2026-02-15", 49.99, "ADOBE CREATIVE"), out("2", "2026-03-15", 49.99, "ADOBE CREATIVE")];
+        let c = detect(&two, &[], d("2026-03-20"));
+        assert_eq!(c.len(), 1, "{c:?}");
+        assert_eq!((c[0].cadence.as_str(), c[0].count, c[0].next_due.as_str()), ("monthly", 2, "2026-04-15"));
+        assert_eq!(c[0].payments, vec![("2026-02-15".to_string(), 49.99), ("2026-03-15".to_string(), 49.99)]);
+        // Two different amounts, or two a week apart, are not enough.
+        let differ = vec![out("1", "2026-02-15", 40.0, "CORNER SHOP"), out("2", "2026-03-15", 61.0, "CORNER SHOP")];
+        assert!(detect(&differ, &[], d("2026-03-20")).is_empty());
+        let weekly = vec![out("1", "2026-03-02", 20.0, "CAR WASH"), out("2", "2026-03-09", 20.0, "CAR WASH")];
+        assert!(detect(&weekly, &[], d("2026-03-12")).is_empty());
+    }
+
+    #[test]
+    fn r681_yearly_and_six_monthly_bills_are_found() {
+        let yearly = vec![out("1", "2025-03-10", 1200.0, "HISCOX INSURANCE"), out("2", "2026-03-12", 1230.0, "HISCOX INSURANCE")];
+        let c = detect(&yearly, &[], d("2026-04-01"));
+        assert_eq!(c.len(), 1, "{c:?}");
+        assert_eq!(c[0].cadence, "annual");
+        assert!(c[0].why.contains("every year"), "{}", c[0].why);
+        let half = vec![
+            out("1", "2025-04-01", 300.0, "STATE REGISTRATION"),
+            out("2", "2025-10-01", 300.0, "STATE REGISTRATION"),
+            out("3", "2026-04-02", 300.0, "STATE REGISTRATION"),
+        ];
+        let c = detect(&half, &[], d("2026-04-20"));
+        assert_eq!(c.len(), 1, "{c:?}");
+        assert_eq!(c[0].cadence, "semiannual");
+        // A yearly payment more than a year and two months old has stopped.
+        assert!(detect(&yearly, &[], d("2027-06-01")).is_empty());
+    }
+
+    #[test]
+    fn r681_a_bill_that_swings_more_than_30_percent_is_one_bill() {
+        let power = vec![
+            out("1", "2026-01-05", 80.0, "CITY ELECTRIC"),
+            out("2", "2026-02-05", 210.0, "CITY ELECTRIC"),
+            out("3", "2026-03-05", 95.0, "CITY ELECTRIC"),
+            out("4", "2026-04-05", 160.0, "CITY ELECTRIC"),
+        ];
+        let c = detect(&power, &[], d("2026-04-10"));
+        assert_eq!(c.len(), 1, "{c:?}");
+        assert_eq!(c[0].cadence, "monthly");
+        assert_eq!(c[0].count, 4);
+        // Past a 50% swing it is tracked as varying: words and date only.
+        assert_eq!(c[0].amount, 0.0);
+        assert!(c[0].monthly > 0.0);
+        assert!(c[0].why.contains("between $80 and $210"), "{}", c[0].why);
+    }
+
+    #[test]
+    fn r681_card_charges_with_different_tails_are_one_payee() {
+        let txns = vec![
+            out("1", "2026-01-08", 15.49, "NETFLIX.COM LOS GATOS CA"),
+            out("2", "2026-02-08", 15.49, "NETFLIX.COM 866-579-7172 CA"),
+            out("3", "2026-03-08", 15.49, "NETFLIX.COM LOS GATOS CA"),
+        ];
+        let c = detect(&txns, &[], d("2026-03-12"));
+        assert_eq!(c.len(), 1, "{c:?}");
+        assert_eq!((c[0].key.as_str(), c[0].count), ("netflix", 3));
+        // Accepting it links all three.
+        let b = Bill { id: "b".into(), payee_match: c[0].key.clone(), amount: c[0].amount, tolerance_pct: c[0].tolerance_pct, cadence: c[0].cadence.clone(), anchor: c[0].anchor.clone(), status: "active".into(), name: c[0].name.clone() };
+        assert_eq!(auto_links(&[b], &txns, &HashSet::new(), &[]).len(), 3);
+        // A suggestion dismissed under its old words (with the state code) stays dismissed.
+        let mut gone = bill("x", "netflix los gatos ca", 0.0, "monthly", "");
+        gone.status = "ignored".into();
+        assert!(detect(&txns, &[gone], d("2026-03-12")).is_empty());
+    }
+
+    #[test]
     fn payee_key_drops_rails_and_references() {
         assert_eq!(payee_key("Zelle payment to Oak Street Properties JPM99A1B2"), "oak street properties");
         assert_eq!(payee_key("ACH DEBIT GEICO *AUTO PPD ID: 123456"), "geico");
@@ -1828,7 +1989,8 @@ mod tests {
         assert_eq!(links.len(), 4);
         assert_eq!(links.iter().find(|l| l.bank_txn_id == "0").unwrap().period, "");
     }
-
+
+
     #[test]
     fn a_bill_that_varies_shows_what_it_costs_on_average() {
         let b = bill("power", "city electric", 0.0, "monthly", "2026-01-20");

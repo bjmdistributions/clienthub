@@ -15,7 +15,7 @@ import { isRenewal } from "./renewals";
 
 // ─── the team's notices ───────────────────────────────────────────────────
 
-export const TEAM_NOTICE_KINDS = ["logistics_quote", "carrier_due", "carrier_overdue", "bill_due", "bill_overdue", "bill_paid", "logistics_pay_due", "logistics_bol", "bank_txn", "deal_complete", "call_urgent"] as const;
+export const TEAM_NOTICE_KINDS = ["logistics_quote", "carrier_due", "carrier_overdue", "bill_due", "bill_overdue", "bill_paid", "bill_found", "logistics_pay_due", "logistics_bol", "bank_txn", "deal_complete", "call_urgent"] as const;
 export type TeamNoticeKind = (typeof TEAM_NOTICE_KINDS)[number];
 export const isTeamNoticeKind = (k: string): k is TeamNoticeKind => (TEAM_NOTICE_KINDS as readonly string[]).includes(k);
 
@@ -62,7 +62,7 @@ export function leadNoticesOf(list: readonly LeadNotification[] | null | undefin
 
 /** R-477: the server's notices that ask something of you. They count on the bell. A paid bill and a supplier's
  *  details only tell you something. */
-export const NEEDS_YOU_NOTICE_KINDS = ["bill_due", "bill_overdue", "carrier_due", "carrier_overdue", "logistics_quote", "logistics_pay_due", "call_urgent"] as const;
+export const NEEDS_YOU_NOTICE_KINDS = ["bill_due", "bill_overdue", "bill_found", "carrier_due", "carrier_overdue", "logistics_quote", "logistics_pay_due", "call_urgent"] as const;
 export const isNeedsYouKind = (k: string): boolean => (NEEDS_YOU_NOTICE_KINDS as readonly string[]).includes(k);
 
 /** R-478: the notices that raise an operating-system alert but do not count on the bell. A BOL uploaded to a load is
@@ -112,6 +112,9 @@ export function noticeTarget(n: Pick<LeadNotification, "kind" | "payload_json"> 
       const bill = idIn(p, "bill_id");
       return bill ? { to: "bill", id: bill } : { to: "bill" };
     }
+    // R-681: a payment that looks like a bill is asked about on Bills, in Is this a bill?
+    case "bill_found":
+      return { to: "bill" };
     // R-543: the pay day notice is what is to pay that day (his pay, the carriers, the bills), all on Bills.
     case "logistics_pay_due":
       return { to: "bill" };
@@ -137,6 +140,7 @@ export const NOTICE_KIND_LABEL: Record<TeamNoticeKind, string> = {
   bill_due: "Bill due",
   bill_overdue: "Bill overdue",
   bill_paid: "Bill paid",
+  bill_found: "Looks like a bill",
   logistics_pay_due: "Pay day",
   logistics_bol: "BOL uploaded",
   bank_txn: "Bank",
@@ -352,6 +356,7 @@ const ROW_INFO: Record<RowKind, { group: NoticeGroup; label: string; urgency: Ur
   bill_overdue: { group: "bills", label: NOTICE_KIND_LABEL.bill_overdue, urgency: "overdue" },
   bill_due: { group: "bills", label: NOTICE_KIND_LABEL.bill_due, urgency: "needs" },
   bill_paid: { group: "bills", label: NOTICE_KIND_LABEL.bill_paid, urgency: "info" },
+  bill_found: { group: "bills", label: NOTICE_KIND_LABEL.bill_found, urgency: "needs" },
   carrier_overdue: { group: "logistics", label: NOTICE_KIND_LABEL.carrier_overdue, urgency: "overdue" },
   carrier_due: { group: "logistics", label: NOTICE_KIND_LABEL.carrier_due, urgency: "needs" },
   logistics_pay_due: { group: "logistics", label: NOTICE_KIND_LABEL.logistics_pay_due, urgency: "needs" },
