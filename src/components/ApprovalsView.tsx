@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { api, isUnavailable, type ApprovalRequest, type Client, type LeadNotification, type LotDetails, type LotFeedHeld, type Me } from "../lib/api";
+import { api, isUnavailable, type ApprovalRequest, type Client, type LeadNotification, type LotDetails, type LotFeedHeld, type LotFeedWaiting, type Me } from "../lib/api";
 import { lotPriceBlock } from "../lib/price";
 import { fmtAmount } from "../lib/format";
 import PendingReviewModal from "./PendingReviewModal";
@@ -148,12 +148,65 @@ function LeadDetails({ n }: { n: LeadNotification }) {
   );
 }
 
+// R-679: the edit form of a waiting lot, as typed.
+type DraftForm = {
+  name: string; price: string; price_type: string; price_text: string; quantity: string; cost: string;
+  supplier: string; location: string; category: string; description: string; notes: string;
+};
+const formOf = (d: NonNullable<LotFeedHeld["draft"]>): DraftForm => ({
+  name: d.name || "",
+  price: d.price_type === "custom" || !(d.asking_price > 0) ? "" : String(d.asking_price),
+  price_type: ["per_unit", "total", "custom"].includes(d.price_type) ? d.price_type : "per_unit",
+  price_text: String((d.details as Record<string, unknown> | null)?.price_text ?? ""),
+  quantity: d.quantity > 0 ? String(d.quantity) : "",
+  cost: d.total_cost > 0 ? String(d.total_cost) : "",
+  supplier: d.supplier || "", location: d.location || "", category: d.category || "",
+  description: d.description || "", notes: d.notes || "",
+});
+const typedNumber = (s: string): number => (s.trim() === "" ? 0 : Number(s.replace(/[$,\s]/g, "")));
+// Your cost is per unit on a per-unit price and the whole load otherwise, so a change between them carries it over.
+const costFor = (f: DraftForm, priceType: string): string => {
+  const was = f.price_type === "per_unit", now = priceType === "per_unit";
+  const c = typedNumber(f.cost), q = typedNumber(f.quantity);
+  if (was === now || !(c > 0) || !(q > 0)) return f.cost;
+  return String(Math.round((was ? c * q : c / q) * 10000) / 10000);
+};
+
 /** R-675: a lot the upload address is holding, opened before it is added: its photos, large,
- *  and everything the sheet said about it. Add and Discard answer it, as the row used to. */
-function FeedReview({ a, left, onClose, onDecide, onSkip }: {
-  a: ApprovalRequest; left: number; onClose: () => void; onDecide: (approve: boolean) => Promise<void>; onSkip: () => void;
+ *  and everything the sheet said about it. Add and Discard answer it, as the row used to.
+ *  R-679: Edit changes what it says before it is added. */
+function FeedReview({ a, left, onClose, onDecide, onSkip, startEditing, onSaved }: {
+  a: Pick<ApprovalRequest, "id" | "created_at">; left: number; onClose: () => void; onDecide: (approve: boolean) => Promise<void>; onSkip: () => void;
+  startEditing?: boolean; onSaved?: () => void;
 }) {
   const [held, setHeld] = useState<LotFeedHeld | null>(null);
+  const [editing, setEditing] = useState(!!startEditing);
+  const [form, setForm] = useState<DraftForm | null>(null);
+  const [cats, setCats] = useState<string[]>([]);
+  const [formError, setFormError] = useState("");
+  useEffect(() => { if (editing && !form && held?.draft) setForm(formOf(held.draft)); }, [editing, form, held]);
+  useEffect(() => {
+    if (!editing) return;
+    api.listCategories().then((c) => setCats(c.map((x) => x.label))).catch(() => {});
+  }, [editing]);
+  const cancelEdit = () => { setEditing(false); setForm(null); setFormError(""); };
+  const setF = (p: Partial<DraftForm>) => setForm((f) => (f ? { ...f, ...p } : f));
+  const saveEdit = async () => {
+    if (!form) return;
+    const price = typedNumber(form.price), quantity = typedNumber(form.quantity), cost = typedNumber(form.cost);
+    if (![price, quantity, cost].every((n) => Number.isFinite(n) && n >= 0)) { setFormError("Price, quantity and cost must be numbers."); return; }
+    if (!form.name.trim()) { setFormError("A lot needs a name."); return; }
+    setBusy(true); setFormError("");
+    try {
+      const h = await api.lotFeedDraft(a.id, { ...form, price, quantity, cost });
+      setHeld((was) => ({ ...h, photos: was?.photos ?? h.photos }));
+      cancelEdit();
+      onSaved?.();
+    } catch (e: any) {
+      setFormError(String(e?.message || e || "Couldn't save the changes."));
+    }
+    setBusy(false);
+  };
   // R-676: the photo being dragged, and the save of a new order (Add waits for it).
   const [dragging, setDragging] = useState<number | null>(null);
   const [over, setOver] = useState<number | null>(null);
@@ -168,14 +221,15 @@ function FeedReview({ a, left, onClose, onDecide, onSkip }: {
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") { if (editing) cancelEdit(); else onClose(); }
+      if ((e.target as HTMLElement | null)?.closest?.("input, textarea, select")) return;
       const n = held?.photos.length || 0;
       if (e.key === "ArrowRight" && n) setShown((i) => Math.min(i + 1, n - 1));
       if (e.key === "ArrowLeft" && n) setShown((i) => Math.max(i - 1, 0));
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [held, onClose]);
+  }, [held, onClose, editing]);
 
   const d = held?.draft;
   const src = (rel: string) => `${held!.server.replace(/\/$/, "")}/${rel}`;
@@ -247,7 +301,10 @@ function FeedReview({ a, left, onClose, onDecide, onSkip }: {
               {left > 0 && ` ${left} more ${left === 1 ? "lot is" : "lots are"} waiting after this one.`}
             </div>
           </div>
-          <button onClick={onClose} aria-label="Close" className="ui-ib flex-shrink-0"><X size={16} /></button>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {held?.draft && !editing && <Button onClick={() => setEditing(true)}>Edit</Button>}
+            <button onClick={onClose} aria-label="Close" className="ui-ib"><X size={16} /></button>
+          </div>
         </div>
 
         {error ? (
@@ -286,6 +343,71 @@ function FeedReview({ a, left, onClose, onDecide, onSkip }: {
                 <button onClick={load} className="ui-btn mt-2">Check again</button>
               )}
             </div>
+            {editing && form ? (
+              <div className="min-w-0 space-y-3">
+                <label className="block">
+                  <span className="ui-label">Name</span>
+                  <input className="field-input w-full" value={form.name} onChange={(e) => setF({ name: e.target.value })} autoFocus />
+                </label>
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="block">
+                    <span className="ui-label">Price</span>
+                    <select className="field-input w-full" value={form.price_type} onChange={(e) => setF({ price_type: e.target.value, cost: costFor(form, e.target.value) })}>
+                      <option value="per_unit">Each unit</option>
+                      <option value="total">The whole load</option>
+                      <option value="custom">Written price</option>
+                    </select>
+                  </label>
+                  {form.price_type === "custom" ? (
+                    <label className="block">
+                      <span className="ui-label">Price as written</span>
+                      <input className="field-input w-full" value={form.price_text} onChange={(e) => setF({ price_text: e.target.value })} placeholder="Make an offer" />
+                    </label>
+                  ) : (
+                    <label className="block">
+                      <span className="ui-label">{form.price_type === "per_unit" ? "Price of each unit" : "Price of the load"}</span>
+                      <input className="field-input w-full" inputMode="decimal" value={form.price} onChange={(e) => setF({ price: e.target.value })} />
+                    </label>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="block">
+                    <span className="ui-label">Quantity</span>
+                    <input className="field-input w-full" inputMode="decimal" value={form.quantity} onChange={(e) => setF({ quantity: e.target.value })} />
+                  </label>
+                  <label className="block">
+                    <span className="ui-label">{form.price_type === "per_unit" ? "Your cost of each unit" : "Your cost of the load"}</span>
+                    <input className="field-input w-full" inputMode="decimal" value={form.cost} onChange={(e) => setF({ cost: e.target.value })} />
+                  </label>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="block">
+                    <span className="ui-label">Supplier</span>
+                    <input className="field-input w-full" value={form.supplier} onChange={(e) => setF({ supplier: e.target.value })} />
+                  </label>
+                  <label className="block">
+                    <span className="ui-label">Location</span>
+                    <input className="field-input w-full" value={form.location} onChange={(e) => setF({ location: e.target.value })} />
+                  </label>
+                </div>
+                <label className="block">
+                  <span className="ui-label">Category</span>
+                  <select className="field-input w-full" value={form.category} onChange={(e) => setF({ category: e.target.value })}>
+                    <option value="">No category</option>
+                    {[...new Set([...(form.category ? [form.category] : []), ...cats])].map((c) => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="ui-label">Description</span>
+                  <textarea className="field-input w-full" rows={4} value={form.description} onChange={(e) => setF({ description: e.target.value })} />
+                </label>
+                <label className="block">
+                  <span className="ui-label">Notes</span>
+                  <textarea className="field-input w-full" rows={2} value={form.notes} onChange={(e) => setF({ notes: e.target.value })} />
+                </label>
+                {formError && <div className="text-[14px] text-danger-ink">{formError}</div>}
+              </div>
+            ) : (
             <div className="min-w-0">
               <dl className="grid grid-cols-[96px_minmax(0,1fr)] gap-x-3 gap-y-2 text-[14px]">
                 {facts.map(([k, v]) => (<Fragment key={k}>
@@ -296,15 +418,158 @@ function FeedReview({ a, left, onClose, onDecide, onSkip }: {
               {d?.description && <p className="text-[14px] text-ink mt-4 whitespace-pre-wrap break-words">{d.description}</p>}
               {d?.notes && <p className="ui-note mt-3 whitespace-pre-wrap break-words">{d.notes}</p>}
             </div>
+            )}
           </div>
         )}
 
+        {editing && form ? (
+          <div className="flex gap-2 justify-end">
+            <Button disabled={busy} onClick={cancelEdit}>Cancel</Button>
+            <Button variant="ink" disabled={busy} onClick={saveEdit}>Save changes</Button>
+          </div>
+        ) : (
         <div className="flex gap-2 justify-end">
           {left > 0 && <Button disabled={busy} onClick={onSkip} className="mr-auto">Skip for now</Button>}
           <Button disabled={busy} onClick={() => decide(false)}>Discard</Button>
           <Button variant="ink" disabled={busy || !held} onClick={() => decide(true)}>Add to inventory</Button>
         </div>
+        )}
       </div>
+    </div>
+  );
+}
+
+/** R-679: every lot the upload address is holding, at once. Open one to look at it, Edit to change it,
+ *  Add or Discard it, or tick several and add or discard them together. */
+function WaitingLots({ onClose, onChanged }: { onClose: () => void; onChanged: () => void }) {
+  const [data, setData] = useState<{ lots: LotFeedWaiting[]; server: string } | null>(null);
+  const [error, setError] = useState("");
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [open, setOpen] = useState<{ lot: LotFeedWaiting; edit: boolean } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [sureDiscard, setSureDiscard] = useState(false);
+  const load = useCallback(() => api.lotFeedAll().then((r) => {
+    setData(r); setError("");
+    setPicked((p) => new Set([...p].filter((id) => r.lots.some((l) => l.approval_id === id))));
+  }).catch((e) => setError(String(e?.message || e || "Couldn't read the waiting lots."))), []);
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !open) onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+  const decide = async (ids: string[], approve: boolean) => {
+    setBusy(true);
+    for (const id of ids) await api.resolveApprovalRequest(id, approve).catch(() => {});
+    setPicked(new Set()); setSureDiscard(false);
+    onChanged();
+    await load();
+    setBusy(false);
+  };
+  const lots = data?.lots ?? [];
+  const src = (rel: string) => `${(data?.server || "").replace(/\/$/, "")}/${rel}`;
+  const all = lots.length > 0 && picked.size === lots.length;
+  const toggle = (id: string) => setPicked((p) => { const n = new Set(p); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
+      <div className="bg-surface border border-line rounded-2xl w-full max-w-6xl p-5 max-h-[92vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between gap-3 mb-4">
+          <div className="min-w-0">
+            <h3 className="text-[18px] font-medium text-ink">
+              {!data ? "New lots waiting" : lots.length ? `${lots.length} new ${lots.length === 1 ? "lot" : "lots"} waiting` : "No new lots waiting"}
+            </h3>
+            <div className="ui-note mt-0.5">Sent to your upload address. Nothing is in your inventory or on your website until you add it.</div>
+          </div>
+          <button onClick={onClose} aria-label="Close" className="ui-ib flex-shrink-0"><X size={16} /></button>
+        </div>
+        {picked.size > 0 && (
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-[14px] text-ink mr-auto">{picked.size} ticked</span>
+            <Button disabled={busy} onClick={() => setPicked(new Set())}>Untick</Button>
+            {sureDiscard
+              ? <Button variant="danger" disabled={busy} onClick={() => decide([...picked], false)}>Press again to discard {picked.size}</Button>
+              : <Button disabled={busy} onClick={() => setSureDiscard(true)}>Discard {picked.size}</Button>}
+            <Button variant="ink" disabled={busy} onClick={() => decide([...picked], true)}>Add {picked.size} to inventory</Button>
+          </div>
+        )}
+        <div className="overflow-auto min-h-0 -mx-1 px-1">
+          {error ? (
+            <div className="text-[14px] text-ink bg-surface-2 rounded-lg p-3">{error}</div>
+          ) : !data ? (
+            <div className="text-[14px] text-muted py-10 text-center">Reading the waiting lots…</div>
+          ) : lots.length === 0 ? (
+            <div className="text-[14px] text-muted py-10 text-center">No lots are waiting. New ones from your upload address will show here.</div>
+          ) : (
+            <table className="w-full text-[14px]">
+              <thead>
+                <tr className="text-left text-muted border-b border-line">
+                  <th className="py-2 pr-2 w-8 font-normal">
+                    <input type="checkbox" aria-label="Tick every lot" checked={all}
+                      onChange={() => { setSureDiscard(false); setPicked(all ? new Set() : new Set(lots.map((l) => l.approval_id))); }} />
+                  </th>
+                  <th className="py-2 pr-3 w-[68px] font-normal"><span className="sr-only">Cover</span></th>
+                  <th className="py-2 pr-3 font-normal">Lot</th>
+                  <th className="py-2 pr-3 font-normal">Price</th>
+                  <th className="py-2 pr-3 font-normal text-right">Quantity</th>
+                  <th className="py-2 pr-3 font-normal text-right">Your cost</th>
+                  <th className="py-2 pr-3 font-normal">Sent</th>
+                  <th className="py-2 font-normal"><span className="sr-only">Actions</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                {lots.map((l) => {
+                  const d = l.draft;
+                  const pb = d ? lotPriceBlock(d, (d.details || {}) as LotDetails) : null;
+                  return (
+                    <tr key={l.approval_id} className="border-b border-line align-middle hover:bg-surface-2 cursor-pointer"
+                      onClick={() => setOpen({ lot: l, edit: false })}>
+                      <td className="py-2 pr-2" onClick={(e) => e.stopPropagation()}>
+                        <input type="checkbox" aria-label={`Tick ${d?.name || "this lot"}`} checked={picked.has(l.approval_id)}
+                          onChange={() => { setSureDiscard(false); toggle(l.approval_id); }} />
+                      </td>
+                      <td className="py-2 pr-3">
+                        <div className="w-14 h-14 rounded-lg overflow-hidden bg-surface-2 ring-1 ring-line flex items-center justify-center text-[11px] text-muted text-center">
+                          {l.photos.length > 0
+                            ? <img src={src(l.photos[0])} alt="" className="w-full h-full object-cover" />
+                            : l.photo_links > 0 && !l.photos_ready ? "Downloading" : "No photo"}
+                        </div>
+                      </td>
+                      <td className="py-2 pr-3 min-w-0">
+                        <div className="text-ink font-medium break-words">{d?.name || "New upload"}</div>
+                        <div className="text-muted text-[13px] break-words">
+                          {[d?.supplier, d?.category, l.photos.length ? `${l.photos.length} ${l.photos.length === 1 ? "photo" : "photos"}` : ""].filter(Boolean).join(" · ")}
+                        </div>
+                      </td>
+                      <td className="py-2 pr-3 whitespace-nowrap text-ink">{pb ? [pb.headline, pb.unit].filter(Boolean).join(" ") : ""}</td>
+                      <td className="py-2 pr-3 whitespace-nowrap text-right tabular-nums">{d && d.quantity > 0 ? d.quantity.toLocaleString() : ""}</td>
+                      <td className="py-2 pr-3 whitespace-nowrap text-right tabular-nums">
+                        {d && d.total_cost > 0 ? `${fmtAmount(d.total_cost)}${d.price_type === "per_unit" ? " each" : ""}` : ""}
+                      </td>
+                      <td className="py-2 pr-3 whitespace-nowrap text-muted">{new Date(l.created_at).toLocaleDateString()}</td>
+                      <td className="py-2" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex gap-2 justify-end whitespace-nowrap">
+                          <Button size="sm" disabled={busy} onClick={() => setOpen({ lot: l, edit: true })}>Edit</Button>
+                          <Button size="sm" disabled={busy} onClick={() => decide([l.approval_id], false)}>Discard</Button>
+                          <Button size="sm" variant="ink" disabled={busy} onClick={() => decide([l.approval_id], true)}>Add</Button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+      {open && (
+        <div onClick={(e) => e.stopPropagation()}>
+          <FeedReview key={`${open.lot.approval_id}:${open.edit}`} a={{ id: open.lot.approval_id, created_at: open.lot.created_at }} left={0}
+            startEditing={open.edit} onClose={() => { setOpen(null); load(); }} onSkip={() => setOpen(null)}
+            onSaved={() => { load(); onChanged(); }}
+            onDecide={async (approve) => { await decide([open.lot.approval_id], approve); setOpen(null); }} />
+        </div>
+      )}
     </div>
   );
 }
@@ -322,6 +587,8 @@ export function ApprovalsView({ me, notices }: { me?: Me | null; notices?: Notic
   const [selected, setSelected] = useState<ApprovalRequest | null>(null);
   const [reviewClient, setReviewClient] = useState<Client | null>(null);
   const [feedReview, setFeedReview] = useState<ApprovalRequest | null>(null);
+  // R-679: the list of every waiting lot.
+  const [allLots, setAllLots] = useState(false);
   // R-676: lots answered or skipped while looking through them, so the next one is a new one.
   const feedDone = useRef<Set<string>>(new Set());
   const [opened, setOpened] = useState<string | null>(null);
@@ -535,9 +802,14 @@ export function ApprovalsView({ me, notices }: { me?: Me | null; notices?: Notic
         <div>
           {lotsWaiting.length > 0 && (
             <div className="pb-4">
-              <button onClick={() => { feedDone.current = new Set(); setFeedReview(lotsWaiting[0]); }} className={BTN_SOLID}>
-                Look through {lotsWaiting.length} new {lotsWaiting.length === 1 ? "lot" : "lots"}
-              </button>
+              <div className="flex flex-wrap gap-2">
+                <button onClick={() => setAllLots(true)} className={BTN_SOLID}>
+                  See all {lotsWaiting.length} new {lotsWaiting.length === 1 ? "lot" : "lots"}
+                </button>
+                <button onClick={() => { feedDone.current = new Set(); setFeedReview(lotsWaiting[0]); }} className={BTN_LINE}>
+                  Look through them one by one
+                </button>
+              </div>
             </div>
           )}
           {urgent.length > 0 && (
@@ -591,6 +863,7 @@ export function ApprovalsView({ me, notices }: { me?: Me | null; notices?: Notic
           onResolved={() => { setReviewClient(null); changed(); }} />
       )}
       {selected && <ApprovalDetail a={selected} onClose={() => setSelected(null)} onResolved={resolved} />}
+      {allLots && <WaitingLots onClose={() => setAllLots(false)} onChanged={changed} />}
       {feedReview && (
         <FeedReview key={feedReview.id} a={feedReview} left={lotsLeft(feedReview.id).length} onClose={() => setFeedReview(null)}
           onDecide={async (approve) => { await quick(feedReview.id, approve); nextLot(feedReview.id); }}

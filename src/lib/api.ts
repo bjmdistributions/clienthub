@@ -2965,6 +2965,15 @@ export interface LotFeedHeld {
   server: string;
 }
 
+/** R-679: one upload in the list of every waiting upload (`server` is on the list). */
+export type LotFeedWaiting = Omit<LotFeedHeld, "server"> & { approval_id: string; created_at: string };
+
+/** R-679: the whole edit form of a waiting upload. Cost is per unit on a per-unit price, the load otherwise. */
+export interface LotFeedDraftInput {
+  name: string; price: number; price_type: string; price_text: string; quantity: number; cost: number;
+  supplier: string; location: string; category: string; description: string; notes: string;
+}
+
 // R-562: the Google calendar, as the server answers it (clienthub-api routes/calendar.rs).
 export interface CalendarPerson {
   staff_id: string; name: string; email: string;
@@ -5411,6 +5420,9 @@ export const api = {
   lotFeedHeld: (approvalId: string) => invoke<LotFeedHeld>("lot_feed", { action: "held", body: { approval_id: approvalId } }),
   // R-676: the photos of a waiting upload in the order dragged; answers with them in that order.
   lotFeedOrder: (approvalId: string, photos: string[]) => invoke<{ photos: string[] }>("lot_feed", { action: "order", body: { approval_id: approvalId, photos } }),
+  // R-679: every waiting upload at once, and an edit saved to one before it is added.
+  lotFeedAll: () => invoke<{ lots: LotFeedWaiting[]; server: string }>("lot_feed", { action: "all" }),
+  lotFeedDraft: (approvalId: string, input: LotFeedDraftInput) => invoke<LotFeedHeld>("lot_feed", { action: "draft", body: { approval_id: approvalId, ...input } }),
   listInboundLoads: () => invoke<InboundLoad[]>("list_inbound_loads"),
   approveInboundLoad: (id: string, lots: ApproveLotInput[]) => invoke<string[]>("approve_inbound_load", { id, lots }),
   rejectInboundLoad: (id: string) => invoke<void>("reject_inbound_load", { id }),

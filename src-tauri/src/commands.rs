@@ -10991,6 +10991,18 @@ pub async fn lot_feed(action: String, body: Option<Value>) -> Result<Value, Stri
             }
             http.post(format!("{base}/api/inventory/feed/held/{id}/order")).json(&json!({ "photos": b.get("photos").cloned().unwrap_or(json!([])) }))
         }
+        // R-679: every upload waiting for approval, to see them all at once.
+        "all" => http.get(format!("{base}/api/inventory/feed/held")),
+        // R-679: an edit to a waiting upload, saved before it is added.
+        "draft" => {
+            let mut b = body.unwrap_or_else(|| json!({}));
+            let id = b.get("approval_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+                return Err("Unknown upload".into());
+            }
+            if let Some(o) = b.as_object_mut() { o.remove("approval_id"); }
+            http.post(format!("{base}/api/inventory/feed/held/{id}/draft")).json(&b)
+        }
         _ => return Err("Unknown action".into()),
     };
     let resp = req.bearer_auth(&token).send().await.map_err(|e| e.to_string())?;
@@ -11001,7 +11013,7 @@ pub async fn lot_feed(action: String, body: Option<Value>) -> Result<Value, Stri
     }
     if let Some(o) = v.as_object_mut() {
         o.insert("address".into(), json!(format!("{base}/api/inventory/feed")));
-        if action == "held" { o.insert("server".into(), json!(base)); }
+        if matches!(action.as_str(), "held" | "all" | "draft") { o.insert("server".into(), json!(base)); }
     }
     Ok(v)
 }
