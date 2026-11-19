@@ -3,6 +3,7 @@
 mod ai;
 mod bank_declined;
 mod account_statement;
+mod account_looks;
 mod bank_dedup;
 mod bank_feed;
 mod personal;
@@ -1275,6 +1276,9 @@ fn main() {
             commands::plaid_reconnect_start,
             commands::plaid_reconnect_poll,
             commands::bank_branding,
+            account_looks::account_looks,
+            account_looks::set_account_look,
+            account_looks::site_logo,
             personal::personal_me,
             ein_lock::ein_lock_status,
             ein_lock::ein_lock_open,

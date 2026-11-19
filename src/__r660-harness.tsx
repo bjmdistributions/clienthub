@@ -34,19 +34,33 @@ let id = 0;
 const t = (days: number, amount: number, direction: string, category: string, merchant: string, account = "Everyday Card ··4417") =>
   ({ id: `k.btpl_${++id}`, account_key: "northfield|4417", account, posted_at: d(days), amount, direction, description: merchant.toUpperCase(), merchant, category, pending: days === 0 });
 
-(window as any).__FIXTURE = (cmd: string) => {
+const looks: Record<string, any> = { a4: { color: "#AEAEB2" } };
+(window as any).__FIXTURE = (cmd: string, args?: any) => {
   switch (cmd) {
     case "bank_balances": return {
       last_sync: new Date().toISOString(), reserve_key: "",
       accounts: [
         acct("a1", "pi_a", "Harbor Bank", "Business Checking", "1182", "depository", 48210.55, { available: 46110.55 }),
         acct("a2", "pi_a", "Harbor Bank", "Business Savings", "2290", "depository", 120000),
-        acct("a3", "pi_b", "Summit Credit Union", "Operating", "0451", "depository", 9312.4),
+        acct("a3", "pi_b", "Summit Credit Union", "Operating", "0451", "depository", 9312.4, { drift: -85.5 }),
         acct("a4", "pi_c", "Northfield Card", "Business Rewards", "7731", "credit", -3920.18, { limit: 15000 }),
-        acct("a5", "pi_b", "Summit Credit Union", "Visa Business", "8810", "credit", -11250, { limit: 12500 }),
+        acct("a5", "pi_b", "Summit Credit Union", "Visa Business", "8810", "credit", -11250, { limit: 12500, needs_fix: true }),
       ],
     };
     case "bank_branding": return brand;
+    // R-678: card looks he set (a4 in silver), saved in memory here.
+    case "account_looks": return looks;
+    case "set_account_look": {
+      const { key, reset, ...patch } = args ?? {};
+      if (reset) delete looks[key];
+      else {
+        const l = { ...(looks[key] ?? {}) };
+        for (const [k, v] of Object.entries(patch)) { if (v === undefined) continue; if (v === "") delete l[k]; else l[k] = v; }
+        looks[key] = l;
+      }
+      return { ...looks };
+    }
+    case "site_logo": return logo("S", "#007AFF");
     case "plaid_refresh_sync": return { refresh_refused: [] };
     case "personal_overview": return {
       accounts: [{ account_key: "northfield|4417", label: "Everyday Card ··4417", institution: "Northfield Card", type: "credit", balance: 842.3, available: null, credit_limit: 5000, balance_at: new Date().toISOString() }],

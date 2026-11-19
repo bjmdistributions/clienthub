@@ -1158,7 +1158,12 @@ export interface BankBalance {
   limit?: number | null;
   /** R-659: the bank link the account came through (keys `bankBranding`). */
   item?: string;
+  /** R-678: its bank wants a sign-in, or stopped sharing this account (Fix connection under Setup). */
+  needs_fix?: boolean;
 }
+
+/** R-678: how he has set an account's card to look, by account key; a missing field is the bank's own. */
+export interface AccountLook { color?: string; logo?: string; site?: string }
 
 /** R-659: a bank's logo (base64 PNG) and brand colour (#rrggbb) from Plaid, either may be missing. */
 export interface BankBrand { logo: string | null; color: string | null }
@@ -4861,6 +4866,11 @@ export const api = {
   /** R-618: every connected account with its balance and books check. */
   bankBalances: () => invoke<{ accounts: BankBalance[]; last_sync: string | null; reserve_key: string }>("bank_balances"),
   bankBranding: () => invoke<Record<string, BankBrand>>("bank_branding"),
+  accountLooks: () => invoke<Record<string, AccountLook>>("account_looks"),
+  /** A field left out stays; "" takes it back to the bank's own; `logo` is any picture as base64; `reset` clears all. */
+  setAccountLook: (key: string, patch: { color?: string; logo?: string; site?: string; reset?: boolean }) =>
+    invoke<Record<string, AccountLook>>("set_account_look", { key, ...patch }),
+  siteLogo: (site: string) => invoke<string>("site_logo", { site }),
   // R-660: personal spending, for the workspace owner only.
   personalMe: () => invoke<{ owner: boolean; reason?: string }>("personal_me"),
   personalOverview: () => invoke<{ accounts: PersonalAccount[]; txns: PersonalTxn[]; candidates: PersonalCandidate[] }>("personal_overview"),

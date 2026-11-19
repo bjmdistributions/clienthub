@@ -28,6 +28,7 @@ import BooksStatus from "./BooksStatus";
 import MovedBookings from "./MovedBookings";
 import BankHealthStrip from "./BankHealthStrip";
 import AccountsView from "./AccountsView";
+import { accountIssue } from "../lib/accountLooks";
 import PersonalView from "./PersonalView";
 import { accountLabel, fixBankConnection } from "../lib/plaidFix";
 import Switch from "./Switch";
@@ -856,6 +857,17 @@ export default function FinancialsView() {
   // R-660: Personal is the workspace owner's only; the server says who that is.
   const [personalOwner, setPersonalOwner] = useState(false);
   useEffect(() => { api.personalMe().then((r) => setPersonalOwner(r.owner)).catch(() => setPersonalOwner(false)); }, []);
+  // R-678: how many accounts are marked red on Accounts (books off the bank, or the bank needs reconnecting), counted
+  // in red on its tab. Read again after every sync.
+  const [acctIssues, setAcctIssues] = useState(0);
+  useEffect(() => {
+    const read = () => api.bankBalances().then((r) => setAcctIssues(r.accounts.filter((a) => accountIssue(a, fmtAmount)).length)).catch(() => {});
+    read();
+    let un: (() => void) | undefined;
+    let dead = false;
+    listen("netsync-applied", () => { read(); }).then((u) => { if (dead) u(); else un = u; }).catch(() => {});
+    return () => { dead = true; un?.(); };
+  }, []);
   // R-579: Check books. Loaded when the tab opens and after any change on the screen.
   const [checkBooks, setCheckBooks] = useState<CheckAccount[] | null>(null);
   const [checkBooksError, setCheckBooksError] = useState("");
@@ -3605,7 +3617,7 @@ export default function FinancialsView() {
                   { id: "tobook", label: "To book", count: toBookStats.count > 0 ? toBookStats.count : undefined },
                   { id: "ledger", label: "Ledger" },
                   // R-659: every account and card with its bank's logo and colour; Balances and tax beside it.
-                  { id: "accounts", label: "Accounts" },
+                  { id: "accounts", label: "Accounts", count: acctIssues || undefined, countTone: "urgent" as const },
                   { id: "report", label: "Tax" },
                   { id: "needs", label: "Needs you", count: needCount },
                   // R-660: the owner's personal spending, apart from the books.
@@ -3638,7 +3650,7 @@ export default function FinancialsView() {
           accounts as the Ledger's category picker; nothing here reads any table
           other than bank_txn, so this figure and the Ledger's totals can never
           silently drift apart. */}
-      {tab === "accounts" && <AccountsView onOpenRow={openLedgerRow} />}
+      {tab === "accounts" && <AccountsView onOpenRow={openLedgerRow} onFix={() => setTab("setup")} />}
       {tab === "personal" && personalOwner && <PersonalView />}
       {tab === "personal" && !personalOwner && <p className="ui-note">Personal spending is only for the workspace owner.</p>}
       {tab === "report" && <BalancesAndTax onToBook={() => setTab("tobook")} onCheckBooks={() => setTab("check")} onOpenRow={openLedgerRow} />}

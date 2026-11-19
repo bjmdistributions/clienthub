@@ -10266,7 +10266,7 @@ pub async fn save_profit_split(
 
 /// Shared helper: persist a single setting locally and emit a sync event so it
 /// propagates to the server. Mirrors the upsert pattern in save_profit_split.
-fn write_setting(key: &str, val: &str) -> Result<(), String> {
+pub(crate) fn write_setting(key: &str, val: &str) -> Result<(), String> {
     let mut cols = Map::new();
     cols.insert("key".into(), Value::String(key.to_string()));
     cols.insert("value".into(), Value::String(val.to_string()));
@@ -24225,7 +24225,10 @@ fn publish_balance_and_health() {
     // only; the key (a bank identifier) stays here.
     // R-622: an account that is off carries why, in short (each kind of row, how many and what it does), for the
     // phone to say; the rows themselves stay here.
-    let accounts: Value = Value::Array(bank_balances_list(&conn).into_iter().map(|mut a| {
+    // R-678: each account's colour and logo id, with the logos once each beside them, so the phone draws the same cards.
+    let mut listed = bank_balances_list(&conn);
+    let logos = crate::account_looks::publish_extras(&conn, &mut listed);
+    let accounts: Value = Value::Array(listed.into_iter().map(|mut a| {
         let off = a.get("drift").and_then(|v| v.as_f64()).is_some_and(|d| d.abs() >= 0.005);
         let label = a.get("label").and_then(|v| v.as_str()).unwrap_or("").to_string();
         if off {
@@ -24254,7 +24257,7 @@ fn publish_balance_and_health() {
         a
     }).collect());
     drop(conn);
-    tokio::spawn(async move { crate::netsync::publish_bank_balance_and_health(bal, card.max(0.0), last_sync, banks, reserve, bank_check, accounts).await; });
+    tokio::spawn(async move { crate::netsync::publish_bank_balance_and_health(bal, card.max(0.0), last_sync, banks, reserve, bank_check, accounts, logos).await; });
 }
 
 /// R-518: pull when the window comes to the front and this device has not pulled for five minutes, so a PC that
@@ -24536,6 +24539,7 @@ pub(crate) fn bank_balances_list(conn: &rusqlite::Connection) -> Vec<Value> {
         .unwrap_or_default();
     let r2 = |x: f64| (x * 100.0).round() / 100.0;
     let personal = crate::personal::account_keys(conn); // R-660: shown in Personal, never here
+    let health = plaid_health_load(conn); // R-678: an account whose bank needs its connection fixed is marked red
     for (item, institution, aj) in rows {
         let accts: Vec<Value> = serde_json::from_str(&aj).unwrap_or_default();
         for a in &accts {
@@ -24564,6 +24568,7 @@ pub(crate) fn bank_balances_list(conn: &rusqlite::Connection) -> Vec<Value> {
                 // R-659: the card's limit, and the bank link the account came through (for its logo and colour).
                 "limit": bal.and_then(|b| b.get("limit")).and_then(|v| v.as_f64()).map(r2),
                 "item": item,
+                "needs_fix": crate::account_looks::needs_fix(&health, &item, raw_name, mask),
             }));
         }
     }
