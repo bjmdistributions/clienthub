@@ -48,3 +48,53 @@ export function accountIssue(a: { needs_fix?: boolean; drift: number | null }, f
   if (a.drift != null && Math.abs(a.drift) >= 0.005) return { kind: "books", text: `Your books are ${fmt(Math.abs(a.drift))} away from what the bank shows.` };
   return null;
 }
+
+// R-683 (Jack, 2026-11-23): "preset platinum gold cards in theer and pulling predesigns for all other business cards".
+// A credit card is drawn in a preset finish: the metal or colour its name says (a card named Platinum is platinum),
+// picked by `autoFinish` until he chooses one in Card look. These are finishes, not any bank's artwork; the bank's
+// logo sits on top. "plain" is his own colour (or the bank's). The phone mirrors this list in www/app.js (ACCT_FINISHES).
+
+export interface CardFinish {
+  id: string;
+  name: string;
+  /** The card's face, a CSS background. */
+  background: string;
+  /** Near-black text on it (pale metals) rather than white. */
+  dark: boolean;
+  /** A hairline frame inside the edge, as metal cards have. */
+  frame: boolean;
+  /** Words in a card's name that mean this finish. */
+  match: RegExp;
+}
+
+const metal = (a: string, b: string, c: string, d: string, e: string) =>
+  `linear-gradient(125deg, ${a} 0%, ${b} 24%, ${c} 52%, ${d} 76%, ${e} 100%)`;
+
+/** In matching order: Rose gold before Gold, the metals before the colours. */
+export const CARD_FINISHES: CardFinish[] = [
+  { id: "rose-gold", name: "Rose gold", dark: true, frame: true, match: /rose\s*gold/i, background: metal("#E3ADA1", "#F8DDD6", "#C58B7F", "#F0C9C0", "#B27467") },
+  { id: "platinum", name: "Platinum", dark: true, frame: true, match: /platinum|\bplat\b/i, background: metal("#D7D9DD", "#F5F6F7", "#B4B8BF", "#ECEDEF", "#9FA4AC") },
+  { id: "gold", name: "Gold", dark: true, frame: true, match: /gold/i, background: metal("#D9B45A", "#F6E3A1", "#B98A2E", "#F1D788", "#A67A22") },
+  { id: "black", name: "Black metal", dark: false, frame: true, match: /\bblack\b|centurion|reserve|infinite|onyx/i, background: metal("#2C2C2F", "#48484C", "#121214", "#2F2F33", "#050506") },
+  { id: "titanium", name: "Titanium", dark: false, frame: false, match: /titanium|graphite|\bspark\b|venture|\bmetal\b|silver/i, background: metal("#6B6F77", "#8E929A", "#4A4D54", "#767A82", "#3A3D43") },
+  { id: "sapphire", name: "Sapphire", dark: false, frame: false, match: /sapphire|\bink\b|\bblue\b|preferred|unlimited/i, background: metal("#1E4AA0", "#2F66C8", "#12306E", "#1C4390", "#0B2152") },
+  { id: "emerald", name: "Emerald", dark: false, frame: false, match: /\bgreen\b|emerald/i, background: metal("#12805E", "#1FA277", "#0A5A41", "#137453", "#06402E") },
+  { id: "plum", name: "Plum", dark: false, frame: false, match: /\bplum\b|purple/i, background: metal("#6A2F80", "#8A46A3", "#44185A", "#5E2A74", "#2E0F3F") },
+  { id: "ruby", name: "Ruby", dark: false, frame: false, match: /\bred\b|ruby/i, background: metal("#B4202C", "#D43A45", "#7F121B", "#A31C27", "#5C0B12") },
+  { id: "pearl", name: "Pearl", dark: true, frame: false, match: /pearl|\bwhite\b/i, background: metal("#F7F6F2", "#FFFFFF", "#E2E0DA", "#F3F2EE", "#D5D3CC") },
+];
+
+/** The chip on a card's face. */
+export const CARD_CHIP = "linear-gradient(135deg, #E8D08A 0%, #B8923A 50%, #F1DFA6 100%)";
+
+/** The finish a card's name says, or null when it names none. */
+export function autoFinish(name: string): CardFinish | null {
+  return CARD_FINISHES.find((f) => f.match.test(name)) ?? null;
+}
+
+/** The finish a card is drawn in: his choice, else what its name says; null is his own colour ("plain", an unknown
+ *  id from a newer version, or a name that says nothing). */
+export function finishFor(chosen: string | undefined, name: string): CardFinish | null {
+  if (chosen) return CARD_FINISHES.find((f) => f.id === chosen) ?? null;
+  return autoFinish(name);
+}

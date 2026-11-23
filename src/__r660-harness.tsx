@@ -45,6 +45,11 @@ const looks: Record<string, any> = { a4: { color: "#AEAEB2" } };
         acct("a3", "pi_b", "Summit Credit Union", "Operating", "0451", "depository", 9312.4, { drift: -85.5 }),
         acct("a4", "pi_c", "Northfield Card", "Business Rewards", "7731", "credit", -3920.18, { limit: 15000 }),
         acct("a5", "pi_b", "Summit Credit Union", "Visa Business", "8810", "credit", -11250, { limit: 12500, needs_fix: true }),
+        // R-683: card names that say their finish.
+        acct("a6", "pi_c", "Northfield Card", "Business Platinum", "3004", "credit", -18420.75, { limit: 50000, drift: 0 }),
+        acct("a7", "pi_c", "Northfield Card", "Business Gold", "5512", "credit", -2210, { limit: 20000, drift: 0 }),
+        acct("a8", "pi_a", "Harbor Bank", "Reserve Black", "9001", "credit", -640.2, { limit: 30000, drift: 0 }),
+        acct("a9", "pi_a", "Harbor Bank", "Ink Blue Cash", "4470", "credit", -5120, { limit: 10000, drift: 0 }),
       ],
     };
     case "bank_branding": return brand;

@@ -1165,7 +1165,7 @@ export interface BankBalance {
 }
 
 /** R-678: how he has set an account's card to look, by account key; a missing field is the bank's own. */
-export interface AccountLook { color?: string; logo?: string; site?: string }
+export interface AccountLook { color?: string; logo?: string; site?: string; /** R-683: a preset card finish id; "plain" is his own colour. */ finish?: string }
 
 /** R-659: a bank's logo (base64 PNG) and brand colour (#rrggbb) from Plaid, either may be missing. */
 export interface BankBrand { logo: string | null; color: string | null }
@@ -4879,7 +4879,7 @@ export const api = {
   bankBranding: () => invoke<Record<string, BankBrand>>("bank_branding"),
   accountLooks: () => invoke<Record<string, AccountLook>>("account_looks"),
   /** A field left out stays; "" takes it back to the bank's own; `logo` is any picture as base64; `reset` clears all. */
-  setAccountLook: (key: string, patch: { color?: string; logo?: string; site?: string; reset?: boolean }) =>
+  setAccountLook: (key: string, patch: { color?: string; logo?: string; site?: string; finish?: string; reset?: boolean }) =>
     invoke<Record<string, AccountLook>>("set_account_look", { key, ...patch }),
   siteLogo: (site: string) => invoke<string>("site_logo", { site }),
   // R-660: personal spending, for the workspace owner only.

@@ -1,9 +1,9 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Palette, RefreshCw } from "lucide-react";
+import { Check, Palette, RefreshCw } from "lucide-react";
 import { api, AccountLook, BankBalance, BankBrand } from "../lib/api";
 import { fmtAmount } from "../lib/format";
-import { accountIssue, CARD_COLOURS, CARD_DEFAULT, darkText } from "../lib/accountLooks";
+import { accountIssue, AccountIssue, CARD_CHIP, CARD_COLOURS, CARD_DEFAULT, CARD_FINISHES, CardFinish, darkText, finishFor } from "../lib/accountLooks";
 import { toast } from "./Toast";
 import { Button } from "./ui";
 import StatusPill from "./StatusPill";
@@ -15,91 +15,160 @@ import AccountStatement from "./AccountStatement";
 // balance Plaid last pulled, re-read every minute and after every sync; Refresh asks each bank for its latest (Refresh
 // from bank), no paid Plaid product. Personal accounts (R-660) are not here: they live in Personal.
 //
-// R-678 (Jack, 2026-11-19): "make the accounts have color themes that match card colors or have it be the card in a
-// cool way and have red notfication when it has issues ... i need to be able to link the proper stuff to get the
-// correct logos too." Each account is drawn as its card, in the colour he picks (the bank's own from Plaid until he
-// does), with the logo he sets from the bank's website or an image file. An account whose books do not match the bank,
-// or whose bank needs reconnecting, is marked red on the card and says why under it, and the Accounts tab counts them.
-// Looks are the shared setting `account_looks`, so every computer and the phone draw the same cards.
+// R-678 (Jack, 2026-11-19): a logo and a look he picks per account (the shared setting `account_looks`, so every
+// computer and the phone agree), and a red mark with the reason on an account whose books do not match the bank or
+// whose bank needs reconnecting; the Accounts tab counts them.
+//
+// R-683 (Jack, 2026-11-23): "preset platinum gold cards in theer and pulling predesigns for all other business cards.
+// I want it to be clealy shown and have them be smaller for business credit careds. I dont want bank accounts and
+// savings accounts to be shapedc into cards"; then, the same day: "i dont want the bank views and savings views to
+// look like vieboded cards. i still want them to look professional and clean and look like a banka ccount but the
+// wetnire page needs to look great". So the page is two plain lists on hairlines, the way a bank shows accounts, with
+// no boxes, tints or coloured edges:
+//   - checking, savings, loans: a row each, logo, account, last four, what is available and the balance in columns;
+//   - credit cards: the same row with a SMALL picture of the card in a preset finish (platinum, gold, black metal and
+//     the rest of CARD_FINISHES, picked from the card's name until he chooses), then what is available and owed.
 
-const GROUPS: { id: string; title: string; match: (a: BankBalance) => boolean }[] = [
-  { id: "bank", title: "Checking and savings", match: (a) => a.type === "depository" },
-  { id: "credit", title: "Credit cards", match: (a) => a.type === "credit" },
-  { id: "loan", title: "Loans", match: (a) => a.type === "loan" },
-  { id: "other", title: "Other accounts", match: (a) => !["depository", "credit", "loan"].includes(a.type) },
+const GROUPS: { id: string; title: string; figure: string; match: (a: BankBalance) => boolean }[] = [
+  { id: "bank", title: "Checking and savings", figure: "Balance", match: (a) => a.type === "depository" },
+  { id: "credit", title: "Credit cards", figure: "Owed", match: (a) => a.type === "credit" },
+  { id: "loan", title: "Loans", figure: "Left to pay", match: (a) => a.type === "loan" },
+  { id: "other", title: "Other accounts", figure: "Balance", match: (a) => !["depository", "credit", "loan"].includes(a.type) },
 ];
+
+/** One set of columns for every list, so the figures line up down the page: who, available, the figure, actions. */
+const COLS = "grid grid-cols-[minmax(0,1fr)_auto] lg:grid-cols-[minmax(0,1fr)_190px_150px_200px] items-center gap-x-5 gap-y-2";
 
 const initials = (name: string) =>
   name.split(/\s+/).filter((w) => /^[A-Za-z0-9]/.test(w)).slice(0, 2).map((w) => w[0].toUpperCase()).join("") || "B";
 
-interface Look { color: string; logo: string | null }
+const cap = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 
-/** His choice, else the bank's own, else graphite. */
-const lookOf = (mine: AccountLook | undefined, brand: BankBrand | undefined): Look => ({
+interface Look { color: string; logo: string | null; finish: CardFinish | null }
+
+/** His choice, else the bank's own, else graphite; a credit card also gets its finish (his, else from its name). */
+const lookOf = (a: BankBalance, mine: AccountLook | undefined, brand: BankBrand | undefined): Look => ({
   color: mine?.color || brand?.color || CARD_DEFAULT,
   logo: mine?.logo || brand?.logo || null,
+  finish: a.type === "credit" ? finishFor(mine?.finish, `${a.name} ${a.label}`) : null,
 });
 
-/** The account as its card. The card's colour is his and does not follow the theme, so its text is picked from that
- *  colour (dark on pale cards, white on strong ones) rather than from the theme's tokens. */
-function CardFace({ a, look, issue, onEdit }: { a: BankBalance; look: Look; issue: boolean; onEdit?: () => void }) {
-  const credit = a.type === "credit";
+/** A card's face: its finish, or his colour when it has none. */
+const faceOf = (look: Look) => ({
+  background: look.finish?.background ?? `linear-gradient(135deg, ${look.color} 0%, color-mix(in srgb, ${look.color} 70%, black) 100%)`,
+  dark: look.finish ? look.finish.dark : darkText(look.color),
+  frame: !!look.finish?.frame,
+});
+
+/** The picture of a credit card: finish, logo, chip, name and last four. Its colours are the card's own and do not
+ *  follow the theme, so its text is picked from the face (near-black on pale metals, white on dark ones). The money
+ *  is NOT on it: that sits in the columns beside it, in the app's own type. `big` is the editor's preview. */
+function CardArt({ a, look, big }: { a: BankBalance; look: Look; big?: boolean }) {
+  const face = faceOf(look);
+  const ink = face.dark ? "rgba(17,17,19,0.88)" : "rgba(255,255,255,0.96)";
+  const soft = face.dark ? "rgba(17,17,19,0.6)" : "rgba(255,255,255,0.74)";
+  return (
+    <div className={`relative overflow-hidden aspect-[1.586/1] flex flex-col justify-between flex-shrink-0 ring-1 ring-black/10 ${big ? "w-[280px] rounded-[14px] p-4 shadow-[0_14px_28px_-14px_rgba(0,0,0,0.55)]" : "w-[112px] rounded-[7px] p-[7px] shadow-[0_4px_10px_-6px_rgba(0,0,0,0.5)]"}`}
+      style={{ background: face.background, color: ink }} aria-hidden>
+      {/* Brushed grain and the light across the top, as on a metal card. */}
+      <div className="pointer-events-none absolute inset-0"
+        style={{ background: "repeating-linear-gradient(100deg, rgba(255,255,255,0.05) 0 1px, transparent 1px 3px), linear-gradient(160deg, rgba(255,255,255,0.26) 0%, rgba(255,255,255,0.03) 40%, transparent 62%)" }} />
+      {face.frame && <div className={`pointer-events-none absolute ${big ? "inset-[7px] rounded-[9px]" : "inset-[3px] rounded-[5px]"}`} style={{ boxShadow: `inset 0 0 0 1px ${face.dark ? "rgba(17,17,19,0.22)" : "rgba(255,255,255,0.26)"}` }} />}
+      <div className={`relative flex items-center min-w-0 ${big ? "gap-2.5" : "gap-1"}`}>
+        <div className={`flex items-center justify-center flex-shrink-0 overflow-hidden ${big ? "w-9 h-9 rounded-lg" : "w-4 h-4 rounded-[4px]"}`} style={{ background: "rgba(255,255,255,0.92)" }}>
+          {look.logo
+            ? <img src={`data:image/png;base64,${look.logo}`} alt="" className={`object-contain ${big ? "w-7 h-7" : "w-3 h-3"}`} />
+            : <span className={`font-semibold ${big ? "text-[12px]" : "text-[6.5px]"}`} style={{ color: "rgba(17,17,19,0.85)" }}>{initials(a.institution)}</span>}
+        </div>
+        <div className={`font-medium truncate min-w-0 flex-1 ${big ? "text-[14px]" : "text-[7.5px]"}`}>{a.institution || "Bank"}</div>
+      </div>
+      <div className={`relative ${big ? "w-[42px] h-[31px] rounded-[6px]" : "w-[17px] h-[13px] rounded-[3px]"}`} style={{ background: CARD_CHIP, boxShadow: "inset 0 0 0 1px rgba(0,0,0,0.18)" }}>
+        <div className="absolute inset-x-0 top-1/2 h-px" style={{ background: "rgba(0,0,0,0.22)" }} />
+        <div className="absolute inset-y-0 left-1/3 w-px" style={{ background: "rgba(0,0,0,0.22)" }} />
+        <div className="absolute inset-y-0 right-1/3 w-px" style={{ background: "rgba(0,0,0,0.22)" }} />
+      </div>
+      <div className="relative flex items-end justify-between gap-2 min-w-0">
+        <div className={`font-medium truncate ${big ? "text-[12.5px]" : "text-[7px]"}`} style={{ color: soft }}>{a.name}</div>
+        {a.mask && <div className={`font-medium tabular-nums tracking-[0.1em] flex-shrink-0 ${big ? "text-[15px]" : "text-[8.5px]"}`}>·· {a.mask}</div>}
+      </div>
+    </div>
+  );
+}
+
+/** A bank's logo beside an account that is not a card: plain, on the app's own surface. */
+function BankLogo({ a, look }: { a: BankBalance; look: Look }) {
+  return (
+    <div className="w-9 h-9 rounded-lg ring-1 ring-line bg-surface-2 flex items-center justify-center flex-shrink-0 overflow-hidden" aria-hidden>
+      {look.logo
+        ? <img src={`data:image/png;base64,${look.logo}`} alt="" className="w-6 h-6 object-contain" />
+        : <span className="text-[12px] font-medium text-ink">{initials(a.institution)}</span>}
+    </div>
+  );
+}
+
+/** One account on the list, the way a bank shows it: who it is, what is available, the figure, then whether its
+ *  books agree with the bank and its statement. What is wrong is said in red under it, with where to fix it. */
+function AccountRow({ a, look, issue, onEdit, onFix, onStatement }: {
+  a: BankBalance; look: Look; issue: AccountIssue | null; onEdit?: () => void; onFix?: () => void; onStatement?: () => void;
+}) {
+  const credit = a.type === "credit", loan = a.type === "loan";
   const owed = Math.abs(a.balance);
   const limit = credit && a.limit && a.limit > 0 ? a.limit : null;
   const used = limit ? Math.min(1, owed / limit) : 0;
-  const dark = darkText(look.color);
-  const ink = dark ? "rgba(17,17,19,0.92)" : "rgba(255,255,255,0.96)";
-  const soft = dark ? "rgba(17,17,19,0.62)" : "rgba(255,255,255,0.72)";
-  const track = dark ? "rgba(17,17,19,0.16)" : "rgba(255,255,255,0.24)";
+  const kind = credit ? "" : a.subtype ? cap(a.subtype) : loan ? "Loan" : "Account";
+  const availNow = !credit && a.available !== null && a.available !== undefined ? a.available : null;
   return (
-    <div
-      className={`group relative rounded-2xl overflow-hidden aspect-[1.586/1] min-w-0 flex flex-col justify-between p-4 shadow-[0_10px_24px_-12px_rgba(0,0,0,0.45)] ${issue ? "ring-2 ring-danger ring-offset-2 ring-offset-surface" : "ring-1 ring-black/10"}`}
-      style={{ background: `linear-gradient(135deg, ${look.color} 0%, color-mix(in srgb, ${look.color} 72%, black) 100%)`, color: ink }}
-    >
-      {/* The sheen across the top, as on a real card. */}
-      <div aria-hidden className="pointer-events-none absolute inset-0"
-        style={{ background: "linear-gradient(160deg, rgba(255,255,255,0.22) 0%, rgba(255,255,255,0.04) 38%, transparent 60%)" }} />
-      <div className="relative flex items-start gap-2.5 min-w-0">
-        <div className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 overflow-hidden"
-          style={{ background: dark ? "rgba(255,255,255,0.55)" : "rgba(255,255,255,0.9)" }} aria-hidden>
-          {look.logo
-            ? <img src={`data:image/png;base64,${look.logo}`} alt="" className="w-7 h-7 object-contain" />
-            : <span className="text-[12px] font-semibold" style={{ color: "rgba(17,17,19,0.85)" }}>{initials(a.institution)}</span>}
-        </div>
-        <div className="min-w-0 flex-1 pt-0.5">
-          <div className="text-[13px] font-medium truncate">{a.institution || "Bank"}</div>
-          <div className="text-[11.5px] truncate" style={{ color: soft }}>{credit ? "Credit card" : a.subtype ? a.subtype[0].toUpperCase() + a.subtype.slice(1) : "Account"}</div>
-        </div>
-        {issue && (
-          <span className="w-5 h-5 rounded-full bg-danger flex items-center justify-center text-[12px] font-bold leading-none flex-shrink-0"
-            style={{ color: "rgba(255,255,255,0.96)", boxShadow: `0 0 0 2px ${ink}` }} title="Needs a look: see under the card" aria-label="Needs a look">!</span>
-        )}
-        {onEdit && (
-          <button onClick={onEdit} title="Change this card's colour and logo" aria-label="Change this card's colour and logo"
-            className="w-7 h-7 -mr-1 -mt-0.5 rounded-lg flex items-center justify-center flex-shrink-0 opacity-70 hover:opacity-100 focus-visible:opacity-100 transition-opacity duration-[130ms]"
-            style={{ background: track }}>
-            <Palette size={14} />
-          </button>
-        )}
-      </div>
-      <div className="relative min-w-0">
-        <div className="text-[11.5px]" style={{ color: soft }}>{credit ? "Owed" : a.type === "loan" ? "Left to pay" : "Balance"}</div>
-        <div className="text-[24px] leading-tight font-semibold tabular-nums truncate">{fmtAmount(credit || a.type === "loan" ? owed : a.balance)}</div>
-        {credit && limit ? (
-          <div className="mt-1.5">
-            <div className="h-1 rounded-full overflow-hidden" style={{ background: track }} role="presentation">
-              <div className="h-full rounded-full" style={{ width: `${Math.max(2, used * 100)}%`, background: ink }} />
+    <div className="py-3.5 border-t border-line">
+      <div className={COLS}>
+        <div className="flex items-center gap-3.5 min-w-0">
+          {credit ? <CardArt a={a} look={look} /> : <BankLogo a={a} look={look} />}
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 min-w-0">
+              {issue && <span className="w-2 h-2 rounded-full bg-danger flex-shrink-0" title="Needs a look" aria-label="Needs a look" />}
+              <span className="text-[14px] font-medium text-ink truncate" title={a.name}>{a.name}</span>
             </div>
-            <div className="mt-1 text-[11.5px] tabular-nums" style={{ color: soft }}>{fmtAmount(Math.max(0, limit - owed))} available of {fmtAmount(limit)}</div>
+            <div className="text-[12.5px] text-muted truncate">
+              {a.institution || "Bank"}{kind && ` · ${kind}`}{a.mask && <span className="tabular-nums"> ··{a.mask}</span>}
+            </div>
           </div>
-        ) : a.available !== null && a.available !== undefined && Math.abs(a.available - a.balance) >= 0.005 ? (
-          <div className="mt-0.5 text-[11.5px] tabular-nums" style={{ color: soft }}>{fmtAmount(a.available)} available now</div>
-        ) : null}
+        </div>
+        <div className="hidden lg:block text-right min-w-0">
+          {limit ? (
+            <>
+              <div className="text-[13.5px] text-ink tabular-nums">{fmtAmount(Math.max(0, limit - owed))}</div>
+              <div className="mt-1.5 h-1 rounded-full bg-line overflow-hidden" role="presentation">
+                <div className={`h-full rounded-full ${used >= 0.9 ? "bg-danger" : "bg-ink"}`} style={{ width: `${Math.max(2, used * 100)}%` }} />
+              </div>
+              <div className="mt-1 text-[11.5px] text-muted tabular-nums truncate">of {fmtAmount(limit)} limit</div>
+            </>
+          ) : availNow !== null ? <div className="text-[13.5px] text-ink tabular-nums">{fmtAmount(availNow)}</div> : null}
+        </div>
+        <div className="text-right text-[17px] font-medium text-ink tabular-nums whitespace-nowrap">
+          {fmtAmount(credit || loan ? owed : a.balance)}
+        </div>
+        <div className="col-span-2 lg:col-span-1 flex items-center justify-end gap-3 min-w-0">
+          {issue
+            ? <StatusPill tone="danger">{issue.kind === "connection" ? "Reconnect" : "Off from books"}</StatusPill>
+            : a.drift != null && <span className="inline-flex items-center gap-1 text-[12px] text-muted whitespace-nowrap"><Check size={13} className="text-success" /> Books agree</span>}
+          {onStatement && (
+            <button onClick={onStatement} className="ui-link !text-[12.5px]" title="Every transaction with the balance after it, to hold against your bank">
+              {issue?.kind === "books" ? "See why" : "Statement"}
+            </button>
+          )}
+          {onEdit && (
+            <button onClick={onEdit} title={`Change how this ${credit ? "card" : "account"} looks`} aria-label={`Change how this ${credit ? "card" : "account"} looks`}
+              className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 text-muted hover:text-ink hover:bg-surface-2 transition-colors duration-[130ms]">
+              <Palette size={14} />
+            </button>
+          )}
+        </div>
       </div>
-      <div className="relative flex items-end justify-between gap-3 min-w-0">
-        <div className="text-[12.5px] font-medium truncate" title={a.name}>{a.name}</div>
-        {a.mask && <div className="text-[13px] tabular-nums tracking-[0.12em] flex-shrink-0" style={{ color: soft }}>·· {a.mask}</div>}
-      </div>
+      {issue && (
+        <div className="mt-2 text-[12.5px] text-danger-ink flex items-baseline gap-3 flex-wrap">
+          <span>{issue.text}</span>
+          {issue.kind === "connection" && onFix && <button onClick={onFix} className="ui-link !text-[12.5px]">Fix it</button>}
+        </div>
+      )}
     </div>
   );
 }
@@ -112,8 +181,9 @@ const readFile = (f: File) => new Promise<string>((ok, fail) => {
   r.readAsDataURL(f);
 });
 
-/** Change one card: its colour (Apple's colours, the bank's own, or any colour) and its logo (from the bank's
- *  website, from an image file, or the bank's own). Each change is saved as it is made, with the card shown live. */
+/** Change how one account looks. A credit card picks a finish (platinum, gold and the rest, or a colour of his own);
+ *  every account picks its logo (from the bank's website, from a picture, or the bank's own). Each change is saved as
+ *  it is made, with the account shown live. */
 function LookEditor({ a, mine, brand, onSaved, onClose }: {
   a: BankBalance; mine: AccountLook | undefined; brand: BankBrand | undefined;
   onSaved: (looks: Record<string, AccountLook>) => void; onClose: () => void;
@@ -121,7 +191,9 @@ function LookEditor({ a, mine, brand, onSaved, onClose }: {
   const [site, setSite] = useState(mine?.site ?? "");
   const [busy, setBusy] = useState<"" | "site" | "file" | "save">("");
   const file = useRef<HTMLInputElement>(null);
-  const look = lookOf(mine, brand);
+  const credit = a.type === "credit";
+  const look = lookOf(a, mine, brand);
+  const plain = credit && !look.finish;
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
@@ -160,31 +232,62 @@ function LookEditor({ a, mine, brand, onSaved, onClose }: {
         style={{ background: hex }} />
     );
   };
+  const finishBtn = (id: string, name: string, background: string, on: boolean) => (
+    <button key={id} onClick={() => save({ finish: id })} aria-pressed={on} className="group text-left min-w-0">
+      <div className={`aspect-[1.586/1] rounded-md ring-1 ring-black/10 transition-transform duration-[130ms] group-hover:scale-[1.04] ${on ? "outline outline-2 outline-offset-2 outline-ink" : ""}`}
+        style={{ background }} />
+      <div className={`mt-1.5 text-[11.5px] truncate ${on ? "text-ink font-medium" : "text-muted"}`}>{name}</div>
+    </button>
+  );
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={onClose}>
-      <div role="dialog" aria-modal="true" aria-label={`${a.name} card look`}
+      <div role="dialog" aria-modal="true" aria-label={`${a.name} look`}
         className="bg-surface border border-line rounded-2xl shadow-2xl w-full max-w-lg max-h-[92vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
         <div className="px-5 pt-5 pb-4 border-b border-line">
-          <h2 className="text-[16px] font-semibold text-ink">Card look</h2>
+          <h2 className="text-[16px] font-semibold text-ink">{credit ? "Card look" : "Account logo"}</h2>
           <p className="text-[12px] text-muted mt-0.5">{a.institution} {a.name}{a.mask ? ` ··${a.mask}` : ""}. Shows the same on every computer and your phone.</p>
         </div>
         <div className="p-5 space-y-5">
-          <div className="max-w-[320px] mx-auto"><CardFace a={a} look={look} issue={false} /></div>
-
-          <section>
-            <h3 className="text-[13px] font-medium text-ink mb-2">Colour</h3>
-            <div className="flex flex-wrap items-center gap-2.5">
-              {brand?.color && swatch(brand.color, "The bank's own colour")}
-              {CARD_COLOURS.map((c) => swatch(c.hex, c.name))}
-              <label className="w-8 h-8 rounded-full ring-1 ring-line-3 flex items-center justify-center cursor-pointer relative overflow-hidden"
-                title="Any colour" style={{ background: `conic-gradient(${CARD_COLOURS.slice(0, 8).map((c) => c.hex).concat(CARD_COLOURS[0].hex).join(", ")})` }}>
-                <input type="color" value={look.color} onChange={(e) => save({ color: e.target.value })}
-                  className="absolute inset-0 opacity-0 cursor-pointer" aria-label="Any colour" />
-              </label>
+          {credit ? (
+            <div className="flex justify-center"><CardArt a={a} look={look} big /></div>
+          ) : (
+            <div className="flex items-center gap-3.5">
+              <BankLogo a={a} look={look} />
+              <div className="min-w-0">
+                <div className="text-[14px] font-medium text-ink truncate">{a.name}</div>
+                <div className="text-[12.5px] text-muted truncate">{a.institution || "Bank"}{a.mask ? ` ··${a.mask}` : ""}</div>
+              </div>
             </div>
-            {mine?.color && <button onClick={() => save({ color: "" })} className="ui-link muted mt-2 !text-[12px]">Use the bank's colour</button>}
-          </section>
+          )}
+
+          {credit && (
+            <section>
+              <h3 className="text-[13px] font-medium text-ink mb-1">Finish</h3>
+              <p className="text-[12px] text-muted mb-2.5">Picked from the card's name until you choose one. These are finishes, not the bank's own artwork.</p>
+              <div className="grid grid-cols-4 sm:grid-cols-6 gap-x-3 gap-y-3">
+                {CARD_FINISHES.map((f) => finishBtn(f.id, f.name, f.background, look.finish?.id === f.id))}
+                {finishBtn("plain", "My colour", `linear-gradient(135deg, ${look.color} 0%, color-mix(in srgb, ${look.color} 70%, black) 100%)`, plain)}
+              </div>
+              {mine?.finish && <button onClick={() => save({ finish: "" })} className="ui-link muted mt-2.5 !text-[12px]">Pick it from the card's name</button>}
+            </section>
+          )}
+
+          {plain && (
+            <section>
+              <h3 className="text-[13px] font-medium text-ink mb-2">Colour</h3>
+              <div className="flex flex-wrap items-center gap-2.5">
+                {brand?.color && swatch(brand.color, "The bank's own colour")}
+                {CARD_COLOURS.map((c) => swatch(c.hex, c.name))}
+                <label className="w-8 h-8 rounded-full ring-1 ring-line-3 flex items-center justify-center cursor-pointer relative overflow-hidden"
+                  title="Any colour" style={{ background: `conic-gradient(${CARD_COLOURS.slice(0, 8).map((c) => c.hex).concat(CARD_COLOURS[0].hex).join(", ")})` }}>
+                  <input type="color" value={look.color} onChange={(e) => save({ color: e.target.value })}
+                    className="absolute inset-0 opacity-0 cursor-pointer" aria-label="Any colour" />
+                </label>
+              </div>
+              {mine?.color && <button onClick={() => save({ color: "" })} className="ui-link muted mt-2 !text-[12px]">Use the bank's colour</button>}
+            </section>
+          )}
 
           <section>
             <h3 className="text-[13px] font-medium text-ink mb-1">Logo</h3>
@@ -271,7 +374,7 @@ export default function AccountsView({ onOpenRow, onFix }: { onOpenRow?: (id: st
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div className="min-w-0">
           <h3 className="text-[15px] font-medium text-ink">Accounts</h3>
-          <p className="ui-note mt-0.5">Every business account and card your banks send, with what each holds or owes now. Press the palette on a card to change its colour and logo.</p>
+          <p className="ui-note mt-0.5">Every business account and card your banks send, with what each holds or owes now.</p>
         </div>
         <Button onClick={refresh} disabled={refreshing}>
           <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} /> Refresh from banks
@@ -298,38 +401,21 @@ export default function AccountsView({ onOpenRow, onFix }: { onOpenRow?: (id: st
         const rows = list.filter(g.match);
         if (rows.length === 0) return null;
         return (
-          <section key={g.id} className="pt-4">
-            <h4 className="text-[13px] font-medium text-ink mb-3">
-              {g.title} <span className="text-muted font-normal tabular-nums">{rows.length}</span>
-            </h4>
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-x-5 gap-y-6">
-              {rows.map((a) => {
-                const brand = a.item ? brands[a.item] : undefined;
-                const issue = accountIssue(a, fmtAmount);
-                const statementable = a.type === "depository" || a.type === "credit";
-                return (
-                  <div key={a.key} className="min-w-0">
-                    <CardFace a={a} look={lookOf(looks[a.key], brand)} issue={!!issue} onEdit={() => setEditing(a)} />
-                    <div className="mt-2.5 px-0.5 min-h-[22px] flex items-start justify-between gap-3">
-                      {issue ? (
-                        <div className="min-w-0 flex items-start gap-2">
-                          <StatusPill tone="danger">{issue.kind === "connection" ? "Reconnect" : "Off from books"}</StatusPill>
-                          <span className="text-[12px] text-muted leading-snug">{issue.text}</span>
-                        </div>
-                      ) : <span className="text-[12px] text-muted">{a.drift != null ? "Books agree with the bank" : ""}</span>}
-                      <div className="flex items-center gap-3 flex-shrink-0">
-                        {issue?.kind === "connection" && onFix && <button onClick={onFix} className="ui-link !text-[12.5px]">Fix it</button>}
-                        {statementable && (
-                          <button onClick={() => setStatement(a)} className="ui-link !text-[12.5px]" title="Every transaction with the balance after it, to hold against your bank">
-                            {issue?.kind === "books" ? "See why" : "Statement"}
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
+          <section key={g.id} className="pt-6">
+            <div className={`${COLS} pb-2.5`}>
+              <h4 className="text-[14px] font-medium text-ink">
+                {g.title} <span className="text-muted font-normal tabular-nums">{rows.length}</span>
+              </h4>
+              <div className="hidden lg:block ui-label text-right">Available</div>
+              <div className="ui-label text-right">{g.figure}</div>
+              <div className="hidden lg:block" />
             </div>
+            {rows.map((a) => (
+              <AccountRow key={a.key} a={a} look={lookOf(a, looks[a.key], a.item ? brands[a.item] : undefined)}
+                issue={accountIssue(a, fmtAmount)} onFix={onFix} onEdit={() => setEditing(a)}
+                onStatement={a.type === "depository" || a.type === "credit" ? () => setStatement(a) : undefined} />
+            ))}
+            <div className="border-t border-line" />
           </section>
         );
       })}

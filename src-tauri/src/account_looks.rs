@@ -7,6 +7,11 @@
 //! bank's own from Plaid (`plaid_branding`). A logo comes from an image file he chooses or from the bank's own website,
 //! and is stored as a small PNG. The computer with the bank link sends each account's colour and logo to the server
 //! with its balances, so the phone draws the same cards (`publish_extras`).
+//!
+//! R-683 (Jack, 2026-11-23): "preset platinum gold cards in theer and pulling predesigns for all other business cards".
+//! A look also carries `finish`, the id of a preset card finish (platinum, gold, and the rest of `CARD_FINISHES` in
+//! `src/lib/accountLooks.ts`; "plain" is his own colour). The screens pick a finish from the card's name when he has
+//! not chosen one, so only his own choice is stored here and sent to the phone.
 
 use crate::db::pool;
 use base64::Engine;
@@ -30,6 +35,12 @@ pub(crate) fn load(conn: &rusqlite::Connection) -> Map<String, Value> {
 pub(crate) fn clean_color(s: &str) -> Option<String> {
     let s = s.trim();
     (s.len() == 7 && s.starts_with('#') && s[1..].chars().all(|c| c.is_ascii_hexdigit())).then(|| s.to_ascii_uppercase())
+}
+
+/// A finish id as the screens name them ("platinum", "rose-gold", "plain"), or nothing.
+pub(crate) fn clean_finish(s: &str) -> Option<String> {
+    let s = s.trim();
+    (!s.is_empty() && s.len() <= 24 && s.chars().all(|c| c.is_ascii_lowercase() || c == '-')).then(|| s.to_string())
 }
 
 /// The bare host of what he typed ("https://www.Chase.com/business" becomes "www.chase.com"), or nothing.
@@ -116,6 +127,10 @@ pub(crate) fn publish_extras(conn: &rusqlite::Connection, accounts: &mut [Value]
         let item = a.get("item").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let (color, logo) = effective(&looks, &brands, &key, &item);
         if let Some(c) = color { a["color"] = json!(c); }
+        // R-683: the finish he chose for this card; without one the phone picks from the card's name, as this app does.
+        if let Some(f) = looks.get(&key).and_then(|m| m.get("finish")).and_then(|v| v.as_str()).and_then(clean_finish) {
+            a["finish"] = json!(f);
+        }
         if let Some(l) = logo {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -146,9 +161,9 @@ pub async fn account_looks() -> Result<Value, String> {
 
 /// Change one account's look. Each field left out stays as it is; an empty string takes that field back to the
 /// bank's own. `logo` is any picture as base64 (an image file he chose, or what `site_logo` fetched) and is stored as
-/// a small PNG. `reset` takes the whole account back to the bank's own look.
+/// a small PNG. `finish` is a preset card finish id (R-683). `reset` takes the whole account back to the bank's own look.
 #[tauri::command]
-pub async fn set_account_look(key: String, color: Option<String>, logo: Option<String>, site: Option<String>, reset: Option<bool>) -> Result<Value, String> {
+pub async fn set_account_look(key: String, color: Option<String>, logo: Option<String>, site: Option<String>, finish: Option<String>, reset: Option<bool>) -> Result<Value, String> {
     let key = key.trim().to_string();
     if key.is_empty() || key.len() > 300 { return Err("Which account is this for?".into()); }
     let mut looks = { let conn = pool().get().map_err(|e| e.to_string())?; load(&conn) };
@@ -168,6 +183,10 @@ pub async fn set_account_look(key: String, color: Option<String>, logo: Option<S
                 if bytes.len() > 8 * 1024 * 1024 { return Err("That picture is over 8 MB. Choose a smaller one.".into()); }
                 look.insert("logo".into(), json!(logo_png(&bytes)?));
             }
+        }
+        if let Some(f) = finish {
+            if f.trim().is_empty() { look.remove("finish"); }
+            else { look.insert("finish".into(), json!(clean_finish(&f).ok_or("That card finish is not one this app has.")?)); }
         }
         if let Some(s) = site {
             if s.trim().is_empty() { look.remove("site"); }
@@ -226,6 +245,15 @@ mod tests {
         assert_eq!(clean_site("not a site"), None);
         assert_eq!(clean_site("localhost"), None);
         assert_eq!(clean_site("http://a.com@evil/"), None);
+    }
+
+    #[test]
+    fn a_finish_is_an_id() {
+        assert_eq!(clean_finish(" rose-gold "), Some("rose-gold".into()));
+        assert_eq!(clean_finish("plain"), Some("plain".into()));
+        assert_eq!(clean_finish("Gold"), None);
+        assert_eq!(clean_finish("url(x)"), None);
+        assert_eq!(clean_finish(""), None);
     }
 
     #[test]
