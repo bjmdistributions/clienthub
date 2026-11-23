@@ -36,6 +36,22 @@ export interface PageHeaderProps {
 }
 
 export default function PageHeader({ title, subtitle, actions, tabs, className }: PageHeaderProps) {
+  // R-684: a self-headed screen (Logistics) that you grouped with other screens sits under the shell's header,
+  // so it gives up its title to the shell's and puts its buttons in the shell's slot, keeping its own line and tabs.
+  const { shell } = useContext(PageSlotContext);
+  if (shell) {
+    return (
+      <>
+        {actions ? <PageActions>{actions}</PageActions> : null}
+        {subtitle || tabs ? (
+          <div className={`mb-6 ${className || ""}`}>
+            {subtitle ? <p className="m-0 text-[13px] text-muted">{subtitle}</p> : null}
+            {tabs ? <div className={subtitle ? "mt-4" : ""}>{tabs}</div> : null}
+          </div>
+        ) : null}
+      </>
+    );
+  }
   return (
     <header className={`mb-6 ${className || ""}`}>
       <div className="flex flex-wrap items-center justify-between gap-3">
