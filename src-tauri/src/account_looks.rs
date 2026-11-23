@@ -12,6 +12,13 @@
 //! A look also carries `finish`, the id of a preset card finish (platinum, gold, and the rest of `CARD_FINISHES` in
 //! `src/lib/accountLooks.ts`; "plain" is his own colour). The screens pick a finish from the card's name when he has
 //! not chosen one, so only his own choice is stored here and sent to the phone.
+//!
+//! R-686 (Jack, 2026-11-23): "lets do tghe actual card looks. pull real card looks instead of artificial if possible".
+//! No bank feed gives a card's artwork (Plaid: a logo and one colour), so it cannot be pulled. What can be done is his
+//! own picture of the card: `art`, a picture he chooses (saved from the bank's site or app, or a photo), cropped to a
+//! card's shape and kept as a small JPEG. It wins over the finish. Everything in `account_looks` travels in one shared
+//! setting the server caps at 256 KB, and a setting the server refuses is never sent again (the push is hash-gated),
+//! so a save that would pass `SHARE_MAX` is refused here with the reason.
 
 use crate::db::pool;
 use base64::Engine;
@@ -20,6 +27,11 @@ use serde_json::{json, Map, Value};
 pub const KEY: &str = "account_looks";
 /// The longest side of a stored logo, in pixels: sharp on a card at twice its drawn size, a few KB as a PNG.
 const LOGO_PX: u32 = 128;
+/// A stored picture of a card: a card's proportions (1.586 to 1), sharp where the screens draw it.
+const ART_W: u32 = 320;
+const ART_H: u32 = 202;
+/// The most `account_looks`, and the logos sent to the phone, may weigh: under the server's 262,144 on both.
+const SHARE_MAX: usize = 240_000;
 
 fn b64() -> base64::engine::GeneralPurpose { base64::engine::general_purpose::STANDARD }
 
@@ -62,6 +74,23 @@ pub(crate) fn logo_png(bytes: &[u8]) -> Result<String, String> {
     let mut out = std::io::Cursor::new(Vec::new());
     img.write_to(&mut out, image::ImageOutputFormat::Png).map_err(|e| e.to_string())?;
     Ok(b64().encode(out.into_inner()))
+}
+
+/// A picture of a card, cropped from its centre to a card's shape, as a small JPEG (base64).
+pub(crate) fn card_art_jpeg(bytes: &[u8]) -> Result<String, String> {
+    let img = image::load_from_memory(bytes).map_err(|_| "That file is not a picture this app can read. Try a PNG or JPG.".to_string())?;
+    let img = image::DynamicImage::ImageRgb8(img.resize_to_fill(ART_W, ART_H, image::imageops::FilterType::Lanczos3).to_rgb8());
+    let mut out = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut out, image::ImageOutputFormat::Jpeg(82)).map_err(|e| e.to_string())?;
+    Ok(b64().encode(out.into_inner()))
+}
+
+/// A picture he sent from the screen (plain base64 or a data URL), as its bytes.
+fn picture_bytes(s: &str) -> Result<Vec<u8>, String> {
+    let raw = s.split_once("base64,").map(|(_, b)| b).unwrap_or(s);
+    let bytes = b64().decode(raw.trim()).map_err(|_| "That picture could not be read.".to_string())?;
+    if bytes.len() > 8 * 1024 * 1024 { return Err("That picture is over 8 MB. Choose a smaller one.".into()); }
+    Ok(bytes)
 }
 
 /// The icons a page's `<link rel="...icon...">` tags name, best first: Apple touch icons (large, square), then the
@@ -131,13 +160,26 @@ pub(crate) fn publish_extras(conn: &rusqlite::Connection, accounts: &mut [Value]
         if let Some(f) = looks.get(&key).and_then(|m| m.get("finish")).and_then(|v| v.as_str()).and_then(clean_finish) {
             a["finish"] = json!(f);
         }
-        if let Some(l) = logo {
+        let id_of = |s: &str| {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
-            l.hash(&mut h);
-            let id = format!("{:016x}", h.finish());
+            s.hash(&mut h);
+            format!("{:016x}", h.finish())
+        };
+        if let Some(l) = logo {
+            let id = id_of(&l);
             a["logo"] = json!(id);
             logos.insert(id, json!(l));
+        }
+        // R-686: his picture of the card, in the same map. The server drops the whole map over its cap, which would
+        // take every logo off the phone, so a picture that does not fit is left out and the phone draws the finish.
+        if let Some(art) = looks.get(&key).and_then(|m| m.get("art")).and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+            let id = id_of(art);
+            let held: usize = logos.iter().map(|(k, v)| k.len() + v.as_str().map_or(0, str::len) + 8).sum();
+            if logos.contains_key(&id) || held + art.len() + 32 <= SHARE_MAX {
+                a["art"] = json!(id);
+                logos.insert(id, json!(art));
+            }
         }
     }
     Value::Object(logos)
@@ -161,9 +203,10 @@ pub async fn account_looks() -> Result<Value, String> {
 
 /// Change one account's look. Each field left out stays as it is; an empty string takes that field back to the
 /// bank's own. `logo` is any picture as base64 (an image file he chose, or what `site_logo` fetched) and is stored as
-/// a small PNG. `finish` is a preset card finish id (R-683). `reset` takes the whole account back to the bank's own look.
+/// a small PNG. `finish` is a preset card finish id (R-683). `art` is a picture of the card itself, any picture as
+/// base64, cropped to a card's shape (R-686). `reset` takes the whole account back to the bank's own look.
 #[tauri::command]
-pub async fn set_account_look(key: String, color: Option<String>, logo: Option<String>, site: Option<String>, finish: Option<String>, reset: Option<bool>) -> Result<Value, String> {
+pub async fn set_account_look(key: String, color: Option<String>, logo: Option<String>, site: Option<String>, finish: Option<String>, art: Option<String>, reset: Option<bool>) -> Result<Value, String> {
     let key = key.trim().to_string();
     if key.is_empty() || key.len() > 300 { return Err("Which account is this for?".into()); }
     let mut looks = { let conn = pool().get().map_err(|e| e.to_string())?; load(&conn) };
@@ -177,12 +220,11 @@ pub async fn set_account_look(key: String, color: Option<String>, logo: Option<S
         }
         if let Some(l) = logo {
             if l.trim().is_empty() { look.remove("logo"); }
-            else {
-                let raw = l.split_once("base64,").map(|(_, b)| b).unwrap_or(&l);
-                let bytes = b64().decode(raw.trim()).map_err(|_| "That picture could not be read.".to_string())?;
-                if bytes.len() > 8 * 1024 * 1024 { return Err("That picture is over 8 MB. Choose a smaller one.".into()); }
-                look.insert("logo".into(), json!(logo_png(&bytes)?));
-            }
+            else { look.insert("logo".into(), json!(logo_png(&picture_bytes(&l)?)?)); }
+        }
+        if let Some(p) = art {
+            if p.trim().is_empty() { look.remove("art"); }
+            else { look.insert("art".into(), json!(card_art_jpeg(&picture_bytes(&p)?)?)); }
         }
         if let Some(f) = finish {
             if f.trim().is_empty() { look.remove("finish"); }
@@ -194,7 +236,11 @@ pub async fn set_account_look(key: String, color: Option<String>, logo: Option<S
         }
         if look.is_empty() { looks.remove(&key); } else { looks.insert(key, Value::Object(look)); }
     }
-    crate::commands::write_setting(KEY, &Value::Object(looks.clone()).to_string())?;
+    let text = Value::Object(looks.clone()).to_string();
+    if text.len() > SHARE_MAX {
+        return Err("That is more pictures than can be shared between your devices. Remove a card picture or a logo you added, then try again.".into());
+    }
+    crate::commands::write_setting(KEY, &text)?;
     Ok(Value::Object(looks))
 }
 
@@ -245,6 +291,21 @@ mod tests {
         assert_eq!(clean_site("not a site"), None);
         assert_eq!(clean_site("localhost"), None);
         assert_eq!(clean_site("http://a.com@evil/"), None);
+    }
+
+    #[test]
+    fn a_card_picture_is_cropped_to_a_card() {
+        let img = image::DynamicImage::new_rgba8(1200, 1600);
+        let mut buf = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut buf, image::ImageOutputFormat::Png).unwrap();
+        let jpg = b64().decode(card_art_jpeg(&buf.into_inner()).unwrap()).unwrap();
+        let back = image::load_from_memory(&jpg).unwrap();
+        assert_eq!((back.width(), back.height()), (320, 202));
+        assert_eq!(image::guess_format(&jpg).unwrap(), image::ImageFormat::Jpeg);
+        assert!(jpg.len() < 40_000, "a stored card picture stays small: {}", jpg.len());
+        assert!(card_art_jpeg(b"not an image").is_err());
+        assert!(picture_bytes("data:image/png;base64,aGk=").is_ok());
+        assert!(picture_bytes("***").is_err());
     }
 
     #[test]

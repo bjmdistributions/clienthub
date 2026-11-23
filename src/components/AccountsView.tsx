@@ -37,6 +37,12 @@ import { fixedSentence } from "./BooksStatus";
 // put it in the strip above the tabs as Check now), but nothing on this screen led to it. So Check against bank is in
 // this screen's header and on every Off from books row, and See why on such a row opens the differences under it
 // (`DriftPanel`, R-622: every transaction behind the difference, bank against books), opened by itself after a check.
+//
+// R-686 (Jack, 2026-11-23): "can we have color showing how much has been spent in red. so i know thats the balance
+// owed. i then would like if it has a credit limit, lets do a color filling in the ammmount ... lets do tghe actual
+// card looks. pull real card looks instead of artificial if possible". What a card owes is in red, and the limit bar is
+// filled in red for what is used. A card's real artwork cannot be pulled (the bank feed gives a logo and one colour),
+// so Card look takes a picture of the card that he chooses, and the card is drawn from it in place of a finish.
 
 const GROUPS: { id: string; title: string; figure: string; match: (a: BankBalance) => boolean }[] = [
   { id: "bank", title: "Checking and savings", figure: "Balance", match: (a) => a.type === "depository" },
@@ -53,13 +59,14 @@ const initials = (name: string) =>
 
 const cap = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 
-interface Look { color: string; logo: string | null; finish: CardFinish | null }
+interface Look { color: string; logo: string | null; finish: CardFinish | null; /** His picture of the card (R-686). */ art: string | null }
 
 /** His choice, else the bank's own, else graphite; a credit card also gets its finish (his, else from its name). */
 const lookOf = (a: BankBalance, mine: AccountLook | undefined, brand: BankBrand | undefined): Look => ({
   color: mine?.color || brand?.color || CARD_DEFAULT,
   logo: mine?.logo || brand?.logo || null,
   finish: a.type === "credit" ? finishFor(mine?.finish, `${a.name} ${a.label}`) : null,
+  art: a.type === "credit" ? mine?.art || null : null,
 });
 
 /** A card's face: its finish, or his colour when it has none. */
@@ -73,11 +80,20 @@ const faceOf = (look: Look) => ({
  *  follow the theme, so its text is picked from the face (near-black on pale metals, white on dark ones). The money
  *  is NOT on it: that sits in the columns beside it, in the app's own type. `big` is the editor's preview. */
 function CardArt({ a, look, big }: { a: BankBalance; look: Look; big?: boolean }) {
+  const shape = big ? "w-[280px] rounded-[14px] shadow-[0_14px_28px_-14px_rgba(0,0,0,0.55)]" : "w-[112px] rounded-[7px] shadow-[0_4px_10px_-6px_rgba(0,0,0,0.5)]";
+  // R-686: his own picture of the card is the card; nothing is drawn over it.
+  if (look.art) {
+    return (
+      <div className={`relative overflow-hidden aspect-[1.586/1] flex-shrink-0 ring-1 ring-black/10 ${shape}`} aria-hidden>
+        <img src={`data:image/jpeg;base64,${look.art}`} alt="" className="w-full h-full object-cover" />
+      </div>
+    );
+  }
   const face = faceOf(look);
   const ink = face.dark ? "rgba(17,17,19,0.88)" : "rgba(255,255,255,0.96)";
   const soft = face.dark ? "rgba(17,17,19,0.6)" : "rgba(255,255,255,0.74)";
   return (
-    <div className={`relative overflow-hidden aspect-[1.586/1] flex flex-col justify-between flex-shrink-0 ring-1 ring-black/10 ${big ? "w-[280px] rounded-[14px] p-4 shadow-[0_14px_28px_-14px_rgba(0,0,0,0.55)]" : "w-[112px] rounded-[7px] p-[7px] shadow-[0_4px_10px_-6px_rgba(0,0,0,0.5)]"}`}
+    <div className={`relative overflow-hidden aspect-[1.586/1] flex flex-col justify-between flex-shrink-0 ring-1 ring-black/10 ${shape} ${big ? "p-4" : "p-[7px]"}`}
       style={{ background: face.background, color: ink }} aria-hidden>
       {/* Brushed grain and the light across the top, as on a metal card. */}
       <div className="pointer-events-none absolute inset-0"
@@ -149,14 +165,16 @@ function AccountRow({ a, look, issue, onEdit, onFix, onStatement, onCheck, check
           {limit ? (
             <>
               <div className="text-[13.5px] text-ink tabular-nums">{fmtAmount(Math.max(0, limit - owed))}</div>
-              <div className="mt-1.5 h-1 rounded-full bg-line overflow-hidden" role="presentation">
-                <div className={`h-full rounded-full ${used >= 0.9 ? "bg-danger" : "bg-ink"}`} style={{ width: `${Math.max(2, used * 100)}%` }} />
+              {/* R-686: the limit as a bar, filled in red for what is owed of it. */}
+              <div className="mt-1.5 h-1.5 rounded-full bg-line overflow-hidden" role="img" aria-label={`${Math.round(used * 100)}% of the limit used`}>
+                {owed >= 0.005 && <div className="h-full rounded-full bg-danger" style={{ width: `${Math.max(2, used * 100)}%` }} />}
               </div>
               <div className="mt-1 text-[11.5px] text-muted tabular-nums truncate">of {fmtAmount(limit)} limit</div>
             </>
           ) : availNow !== null ? <div className="text-[13.5px] text-ink tabular-nums">{fmtAmount(availNow)}</div> : null}
         </div>
-        <div className="text-right text-[17px] font-medium text-ink tabular-nums whitespace-nowrap">
+        {/* R-686: what a card owes is in red; a card that owes nothing, and every other figure, is in ink. */}
+        <div className={`text-right text-[17px] font-medium tabular-nums whitespace-nowrap ${credit && owed >= 0.005 ? "text-danger-ink" : "text-ink"}`}>
           {fmtAmount(credit || loan ? owed : a.balance)}
         </div>
         <div className="col-span-2 lg:col-span-1 flex items-center justify-end gap-3 min-w-0">
@@ -213,8 +231,9 @@ function LookEditor({ a, mine, brand, onSaved, onClose }: {
   onSaved: (looks: Record<string, AccountLook>) => void; onClose: () => void;
 }) {
   const [site, setSite] = useState(mine?.site ?? "");
-  const [busy, setBusy] = useState<"" | "site" | "file" | "save">("");
+  const [busy, setBusy] = useState<"" | "site" | "file" | "art" | "save">("");
   const file = useRef<HTMLInputElement>(null);
+  const artFile = useRef<HTMLInputElement>(null);
   const credit = a.type === "credit";
   const look = lookOf(a, mine, brand);
   const plain = credit && !look.finish;
@@ -242,9 +261,9 @@ function LookEditor({ a, mine, brand, onSaved, onClose }: {
       toast(typeof e === "string" ? e : (e as Error)?.message || "No logo came back from that website", "error");
     } finally { setBusy(""); }
   };
-  const fromFile = async (f: File | undefined) => {
+  const fromFile = async (f: File | undefined, what: "logo" | "art" = "logo") => {
     if (!f) return;
-    try { await save({ logo: await readFile(f) }, "file"); }
+    try { await save(what === "art" ? { art: await readFile(f) } : { logo: await readFile(f) }, what === "art" ? "art" : "file"); }
     catch (e: unknown) { toast((e as Error)?.message || "That file could not be read", "error"); }
   };
 
@@ -287,6 +306,19 @@ function LookEditor({ a, mine, brand, onSaved, onClose }: {
 
           {credit && (
             <section>
+              <h3 className="text-[13px] font-medium text-ink mb-1">Picture of your card</h3>
+              <p className="text-[12px] text-muted mb-2.5">For the card's real look, choose a picture of it: save the card's picture from your bank's website or app, or take a photo. It is cropped to the card's shape. Banks do not send a card's artwork, so it cannot be fetched for you.</p>
+              <div className="flex items-center gap-4 flex-wrap">
+                <Button size="sm" onClick={() => artFile.current?.click()} disabled={busy !== ""}>{busy === "art" ? "Saving" : look.art ? "Choose another picture" : "Choose a picture of the card"}</Button>
+                <input ref={artFile} type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp" className="hidden"
+                  onChange={(e) => { fromFile(e.target.files?.[0], "art"); e.target.value = ""; }} />
+                {look.art && <button onClick={() => save({ art: "" })} className="ui-link muted !text-[12px]">Remove the picture</button>}
+              </div>
+            </section>
+          )}
+
+          {credit && !look.art && (
+            <section>
               <h3 className="text-[13px] font-medium text-ink mb-1">Finish</h3>
               <p className="text-[12px] text-muted mb-2.5">Picked from the card's name until you choose one. These are finishes, not the bank's own artwork.</p>
               <div className="grid grid-cols-4 sm:grid-cols-6 gap-x-3 gap-y-3">
@@ -297,7 +329,7 @@ function LookEditor({ a, mine, brand, onSaved, onClose }: {
             </section>
           )}
 
-          {plain && (
+          {plain && !look.art && (
             <section>
               <h3 className="text-[13px] font-medium text-ink mb-2">Colour</h3>
               <div className="flex flex-wrap items-center gap-2.5">
@@ -444,7 +476,7 @@ export default function AccountsView({ onOpenRow, onFix, onCheckBooks, onChanged
             {i > 0 && <div className={`vsep ${i === 2 ? "hidden xl:block" : "hidden sm:block"}`} />}
             <div className="min-w-0">
               <div className="ui-label">{label}</div>
-              <div className="ui-fig mt-1 tabular-nums truncate">{value}</div>
+              <div className={`ui-fig mt-1 tabular-nums truncate ${i === 1 && owed >= 0.005 ? "text-danger-ink" : ""}`}>{value}</div>
               <div className={`text-[12px] truncate mt-0.5 ${i === 3 && issues ? "text-danger" : "text-muted"}`} title={sub}>{sub}</div>
             </div>
           </Fragment>

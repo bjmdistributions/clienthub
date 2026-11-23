@@ -34,7 +34,21 @@ let id = 0;
 const t = (days: number, amount: number, direction: string, category: string, merchant: string, account = "Everyday Card ··4417") =>
   ({ id: `k.btpl_${++id}`, account_key: "northfield|4417", account, posted_at: d(days), amount, direction, description: merchant.toUpperCase(), merchant, category, pending: days === 0 });
 
-const looks: Record<string, any> = { a4: { color: "#AEAEB2" } };
+// R-686: an invented picture of a card (stripes and a ring), as his own card picture would arrive.
+function cardPicture(): string {
+  const c = document.createElement("canvas");
+  c.width = 320; c.height = 202;
+  const g = c.getContext("2d")!;
+  const grad = g.createLinearGradient(0, 0, 320, 202);
+  grad.addColorStop(0, "navy"); grad.addColorStop(1, "teal");
+  g.fillStyle = grad; g.fillRect(0, 0, 320, 202);
+  g.strokeStyle = "rgba(255,255,255,0.35)"; g.lineWidth = 10;
+  for (let i = -200; i < 320; i += 46) { g.beginPath(); g.moveTo(i, 202); g.lineTo(i + 200, 0); g.stroke(); }
+  g.beginPath(); g.arc(250, 140, 34, 0, Math.PI * 2); g.stroke();
+  g.fillStyle = "white"; g.font = "bold 20px sans-serif"; g.fillText("SAMPLE CARD", 22, 44);
+  return c.toDataURL("image/jpeg", 0.85).split("base64,")[1];
+}
+const looks: Record<string, any> = { a4: { color: "#AEAEB2" }, a9: { art: cardPicture() } };
 (window as any).__FIXTURE = (cmd: string, args?: any) => {
   switch (cmd) {
     case "bank_balances": return {
