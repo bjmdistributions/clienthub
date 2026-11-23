@@ -29,7 +29,8 @@ const KIND: Record<DriftCause["kind"], { title: (n: number) => string; fix: stri
     fix: "Remove each one on the Not imported list, or keep it if you know it happened.", where: "list",
   },
   withdrawn: {
-    title: (n) => `${plural(n, "transaction", "transactions")} the bank took back, still in your books`,
+    // R-687: only a POSTED row the bank took back is counted by the check; a pending hold it dropped is not here.
+    title: (n) => `${plural(n, "posted transaction", "posted transactions")} the bank took back, still in your books`,
     fix: "Answer each one under Needs you.", where: "row",
   },
   duplicate: {
@@ -46,12 +47,14 @@ const KIND: Record<DriftCause["kind"], { title: (n: number) => string; fix: stri
   },
 };
 
-export default function DriftPanel({ account, name, card, onCheckBooks, onOpenRow, onStatement, onChanged }: {
+export default function DriftPanel({ account, name, card, onCheckBooks, onOpenRow, onStatement, onNeeds, onChanged }: {
   account: string;
   name: string;
   /** A credit card: its balance is what is owed, so the sentences say so. */
   card?: boolean;
   onCheckBooks?: () => void;
+  /** R-687: open Needs you, where a row the bank took back or a possible duplicate is answered. */
+  onNeeds?: () => void;
   onOpenRow?: (id: string, amount: number) => void;
   /** R-667: open the account's statement, every row with the balance after it. */
   onStatement?: () => void;
@@ -160,6 +163,9 @@ export default function DriftPanel({ account, name, card, onCheckBooks, onOpenRo
             )}
             {k.where === "list" && onCheckBooks && (
               <button onClick={onCheckBooks} className="mt-1 font-medium text-ink hover:opacity-70">Open the Not imported list</button>
+            )}
+            {k.where === "row" && onNeeds && (
+              <button onClick={onNeeds} className="mt-1 font-medium text-ink hover:opacity-70">Answer {c.rows.length === 1 ? "it" : "them"} under Needs you</button>
             )}
           </div>
         );

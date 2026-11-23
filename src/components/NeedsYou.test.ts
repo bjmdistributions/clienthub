@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { needsYou } from "./NeedsYou";
-import { fixedSentence, statusLines } from "./BooksStatus";
+import { checkSentence, fixedSentence, statusLines } from "./BooksStatus";
 import type { BankDeclined, NearDupPair, NearDupRow, RetractedRow } from "../lib/api";
 
 const row = (id: string, extra: Partial<NearDupRow> = {}): NearDupRow => ({
@@ -68,5 +68,23 @@ describe("the books status strip", () => {
     expect(fixedSentence({ imported: 1, amended: 0, removed: 0, moved: 0, two_payments: 0, copies: 0, agreed: 0 })).toBe("The last check brought in 1 transaction.");
     expect(fixedSentence({ imported: 3, amended: 0, removed: 1, moved: 2, two_payments: 0, copies: 1, agreed: 0 }))
       .toBe("The last check brought in 3 transactions, removed 2 copies and moved 2 bookings to the posted charge.");
+  });
+});
+
+describe("R-687 what a Check against bank run says", () => {
+  const none = { imported: 0, amended: 0, removed: 0, moved: 0, two_payments: 0, copies: 0, agreed: 0 };
+  it("says it checked everything and that nothing differs", () => {
+    expect(checkSentence({ fixed: none, missing: 0, differs: 0, not_at_bank: 0, errors: [] }))
+      .toBe("Checked every posted transaction your banks list. Nothing had to change. Every one is in your books.");
+  });
+  it("says what it put right and what is left for him, with where", () => {
+    expect(checkSentence({ fixed: { ...none, imported: 3, removed: 1 }, missing: 1, differs: 1, not_at_bank: 0, errors: [] }))
+      .toBe("Checked every posted transaction your banks list. It brought in 3 transactions and removed 1 copy. 2 transactions still differ from the bank: answer them under Needs you.");
+    expect(checkSentence({ fixed: none, missing: 0, differs: 0, not_at_bank: 1, errors: [] }))
+      .toBe("Checked every posted transaction your banks list. Nothing could be put right without you. 1 transaction still differs from the bank: answer it under Needs you.");
+  });
+  it("names a bank it could not read", () => {
+    expect(checkSentence({ fixed: none, missing: 0, differs: 0, not_at_bank: 0, errors: [{ institution: "Example Bank", error: "x" }] }))
+      .toContain("Example Bank could not be read, so it was not checked.");
   });
 });

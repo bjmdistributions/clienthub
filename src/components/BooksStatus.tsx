@@ -42,6 +42,22 @@ export function fixedSentence(f: BankCheck["fixed"]): string {
   return `The last check ${parts.length ? `${parts.join(", ")} and ${last}` : last}.`;
 }
 
+/** R-687 (Jack: "the chgeck against bank button doesnt even fix anything ... make it actually useful"): what a Check
+ *  against bank run did and what it left, in full: what it put right, how many transactions still differ and where
+ *  they are answered, and any bank it could not read. Never just "Checked". */
+export function checkSentence(c: Pick<BankCheck, "fixed" | "missing" | "differs" | "not_at_bank" | "errors">): string {
+  const did = fixedSentence(c.fixed).replace("The last check", "It");
+  const left = (c.missing || 0) + (c.differs || 0) + (c.not_at_bank || 0);
+  const unread = (c.errors ?? []).map((e) => e.institution).filter(Boolean);
+  const parts = ["Checked every posted transaction your banks list."];
+  parts.push(did || (left === 0 ? "Nothing had to change." : "Nothing could be put right without you."));
+  parts.push(left === 0
+    ? "Every one is in your books."
+    : `${n(left, "transaction still differs", "transactions still differ")} from the bank: answer ${left === 1 ? "it" : "them"} under Needs you.`);
+  if (unread.length) parts.push(`${unread.join(", ")} could not be read, so ${unread.length === 1 ? "it was" : "they were"} not checked.`);
+  return parts.join(" ");
+}
+
 export default function BooksStatus({ reloadKey, needs, onGo, onChanged }: {
   reloadKey?: unknown;
   /** How many items the Needs you list holds. */
@@ -75,7 +91,7 @@ export default function BooksStatus({ reloadKey, needs, onGo, onChanged }: {
     try {
       const c = await api.checkAgainstBank();
       setCheck(c);
-      toast(fixedSentence(c.fixed).replace("The last check", "Checked. It") || "Checked. Nothing had to change.", "success");
+      toast(checkSentence(c), "success");
       onChanged();
     } catch (e: unknown) {
       toast(typeof e === "string" ? e : (e as Error)?.message || "The banks could not be read", "error");

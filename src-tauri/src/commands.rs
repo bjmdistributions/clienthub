@@ -23571,6 +23571,7 @@ async fn bank_posted_history(aliases: &std::collections::HashMap<String, String>
 /// is not the bank's, and a bank-feed row the bank no longer lists. Writes nothing to the ledger itself.
 #[tauri::command]
 pub async fn check_against_bank() -> Result<Value, String> {
+    recon_heal_double_counted(); // R-687
     check_against_bank_run(false).await
 }
 
@@ -24197,6 +24198,7 @@ pub async fn plaid_health_dismiss() -> Result<(), String> {
 /// leaves this device). One POST carrying both, and only when there is a balance: a server older than deploy-245
 /// reads a POST without balance numbers as a $0 balance, and ignores the health keys it does not know. Best-effort.
 fn publish_balance_and_health() {
+    recon_heal_double_counted(); // R-687: the phone is sent the corrected check too
     let Ok(conn) = pool().get() else { return };
     let (bal, card, any) = plaid_balances(&conn);
     if !any { return; }
@@ -24626,6 +24628,7 @@ pub async fn bank_branding() -> Result<Value, String> {
 /// R-618: Balances and tax's accounts, with when the banks were last pulled.
 #[tauri::command]
 pub async fn bank_balances() -> Result<Value, String> {
+    recon_heal_double_counted(); // R-687
     let conn = pool().get().map_err(|e| e.to_string())?;
     let accounts = bank_balances_list(&conn);
     let last_sync: Option<String> = conn.query_row("SELECT value FROM settings WHERE key='plaid_last_sync'", [], |r| r.get(0)).ok();
@@ -28996,6 +28999,7 @@ fn recon_settled_before(conn: &rusqlite::Connection, aliases: &std::collections:
 /// change (a cleanup, a re-pull, a first run).
 #[tauri::command]
 pub async fn reconcile_accounts(rebaseline: Option<bool>) -> Result<Vec<ReconAccount>, String> {
+    recon_heal_double_counted(); // R-687
     let rebase = rebaseline.unwrap_or(false);
     let (out, next) = {
         let conn = pool().get().map_err(|e| e.to_string())?;
@@ -29066,6 +29070,7 @@ pub async fn accept_bank_figures(account: String) -> Result<Vec<ReconAccount>, S
 /// only.
 #[tauri::command]
 pub async fn explain_bank_drift(account: String) -> Result<Value, String> {
+    recon_heal_double_counted(); // R-687
     let conn = pool().get().map_err(|e| e.to_string())?;
     explain_bank_drift_inner(&conn, account)
 }
@@ -29127,9 +29132,15 @@ fn explain_bank_drift_inner(conn: &rusqlite::Connection, account: String) -> Res
     let rows = load_dedup_rows(&conn)?;
     let mine: Vec<&crate::bank_dedup::TxnRow> = rows.iter().filter(|x| acct_of(&x.account) == account).collect();
     for x in &mine {
-        if !seen.contains(&x.id) && crate::bank_dedup::pending_and_retracted(&x.raw_json).1 {
+        let (pending, retracted) = crate::bank_dedup::pending_and_retracted(&x.raw_json);
+        if !seen.contains(&x.id) && retracted {
             seen.insert(x.id.clone());
-            push(&mut groups, "withdrawn", row_v(&x.id, &x.date, &x.desc, x.amount, &x.dir, -signed(x.amount, &x.dir)));
+            // R-687: since R-667 the check adds up posted rows only. A pending hold the bank dropped is not in that
+            // total, so it is no part of the difference (it is still asked about under Needs you); listing it here
+            // "explained" money that was never counted and left a remainder nothing explained.
+            if !pending {
+                push(&mut groups, "withdrawn", row_v(&x.id, &x.date, &x.desc, x.amount, &x.dir, -signed(x.amount, &x.dir)));
+            }
         }
     }
     let mut dup_ids: HashSet<String> = HashSet::new();
@@ -29333,34 +29344,113 @@ fn account_statement_inner(conn: &rusqlite::Connection, account: &str, card: boo
 /// The check itself, read-only apart from the baselines it hands back for the caller to write
 /// (`None` when there is nothing to reconcile against). R-579: Check books reads it too, without
 /// writing baselines.
+/// Every bank link's account list with personal accounts left out (R-660), oldest link first, the order
+/// `bank_balances_list` reads them in, so the books check and the Accounts screen keep the same copy of an account.
+fn recon_items(conn: &rusqlite::Connection) -> Vec<Vec<Value>> {
+    let personal = crate::personal::account_keys(conn);
+    conn.prepare("SELECT COALESCE(institution,''), accounts_json FROM plaid_items ORDER BY created_at")
+        .and_then(|mut st| st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map(|it| it.filter_map(|x| x.ok()).collect::<Vec<_>>()))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(institution, aj)| serde_json::from_str::<Vec<Value>>(&aj).unwrap_or_default().into_iter()
+            .filter(|a| !crate::personal::is_personal(&personal, &institution, a)).collect())
+        .collect()
+}
+
+/// R-687 (Jack, 2026-11-23, a card owing $4,242.75 whose See why said the card company says he owes $8,485.50: "tell
+/// me how this makes any sense its telling me 8000+ when its only 4000+"). The bank's balance for the books check, by
+/// the label the ledger's rows carry, each account counted ONCE. One real account can sit under several bank links (a
+/// re-link, or the same bank linked on a second computer); `plaid_balances_split` and `bank_balances_list` already
+/// skip the repeat by `plaid_account_key`, and this check did not, so it held the books against twice the balance.
+/// Two different accounts that share a label still add up. The second map is what the repeats came to, by label:
+/// what the check used to add on top (`recon_heal_double_counted` needs it).
+fn recon_bank_by_label(items: &[Vec<Value>], aliases: &std::collections::HashMap<String, String>)
+    -> (std::collections::HashMap<String, f64>, std::collections::HashMap<String, f64>) {
+    let mut bank: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+    let mut extra: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for accts in items {
+        for a in accts {
+            let kind = a.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            if kind != "depository" && kind != "credit" { continue; }
+            let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let mask = a.get("mask").and_then(|v| v.as_str()).unwrap_or("");
+            let raw = if mask.is_empty() { name.to_string() } else { format!("{} \u{00b7}\u{00b7}{}", name, mask) };
+            let label = aliases.get(&raw).cloned().unwrap_or(raw);
+            let cur = a.get("balances").and_then(|b| b.get("current")).and_then(|v| v.as_f64()).unwrap_or(0.0);
+            // A card's "current" is money OWED — the ledger's sign convention for
+            // a card is the mirror of a depository account, so negate it here.
+            let signed = if kind == "credit" { -cur.abs() } else { cur };
+            if seen.insert(plaid_account_key(a)) { *bank.entry(label).or_insert(0.0) += signed; }
+            else { *extra.entry(label).or_insert(0.0) += signed; }
+        }
+    }
+    (bank, extra)
+}
+
+/// R-687: the new starting point for an account whose old one was taken while its balance was counted twice, or
+/// nothing when the old one was not. `drift` is the account's difference with the balance counted once, `extra` what
+/// the repeat added. A starting point taken from the doubled balance fits the doubled figure and misses the single
+/// one by about a whole balance; one taken before the repeat existed fits the single figure and is left alone. The
+/// new one puts the difference at exactly what the transaction check can name (`row_effects`: rows missing from,
+/// different in, or doubled in the books), so nothing it knows is wrong is forgiven.
+fn recon_healed_baseline(drift: f64, extra: f64, implied: f64, row_effects: f64) -> Option<f64> {
+    let r2 = |x: f64| (x * 100.0).round() / 100.0;
+    (extra.abs() >= 0.005 && (drift + extra).abs() + 0.005 < drift.abs()).then(|| r2(implied - row_effects))
+}
+
+/// R-687: once, on the first read after the update: each account whose balance was counted twice gets the starting
+/// point `recon_healed_baseline` gives it, with today as when its check started. Without this, counting the balance
+/// once would turn its small false difference into a false difference of a whole balance. Marked done in
+/// `recon_heal_r687` (with what was changed, for the record), so a later real difference is never re-judged.
+fn recon_heal_double_counted() {
+    if read_setting("recon_heal_r687").is_some() { return; }
+    // (label, new starting point, what it read off by counted once, the starting point it replaces)
+    let healed: Vec<(String, f64, f64, f64)> = {
+        let Ok(conn) = pool().get() else { return };
+        let aliases = account_alias_map();
+        let (_, extra) = recon_bank_by_label(&recon_items(&conn), &aliases);
+        let recon = if extra.is_empty() { Vec::new() } else { reconcile_accounts_inner(&conn, false).map(|x| x.0).unwrap_or_default() };
+        recon.iter().filter_map(|r| {
+            let x = *extra.get(&r.account)?;
+            r.baseline?;
+            // Only what the transaction check itself names; `late` and `removed` are measured from the old start.
+            let rows: f64 = explain_bank_drift_inner(&conn, r.account.clone()).ok()
+                .and_then(|e| e.get("causes").and_then(|c| c.as_array()).map(|cs| cs.iter()
+                    .filter(|c| matches!(c.get("kind").and_then(|k| k.as_str()), Some("missing" | "differs" | "not_at_bank" | "withdrawn" | "duplicate")))
+                    .filter_map(|c| c.get("effect").and_then(|v| v.as_f64())).sum()))
+                .unwrap_or(0.0);
+            recon_healed_baseline(r.drift, x, r.implied_opening, rows).map(|b| (r.account.clone(), b, r.drift, r.baseline.unwrap_or(0.0)))
+        }).collect()
+    };
+    let now = Utc::now().to_rfc3339();
+    let times_before = recon_baseline_times();
+    if !healed.is_empty() {
+        let mut base: serde_json::Map<String, Value> = read_setting("recon_baselines")
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok()).and_then(|v| v.as_object().cloned()).unwrap_or_default();
+        let mut at = recon_baseline_times();
+        for (label, b, _, _) in &healed {
+            base.insert(label.clone(), json!(b));
+            at.insert(label.clone(), json!(now));
+        }
+        if write_setting("recon_baselines", &Value::Object(base).to_string()).is_err() { return; }
+        let _ = write_setting("recon_baselines_at", &Value::Object(at).to_string());
+        tracing::warn!("books check: {} account(s) had their balance counted twice; their check starts again from today", healed.len());
+    }
+    let _ = write_setting("recon_heal_r687", &json!({
+        "at": now,
+        // The starting point each one replaced is kept here, so the change can be put back by hand.
+        "accounts": healed.iter().map(|(l, b, d, old)| json!({ "account": l, "baseline": b, "was_off_by": d, "replaced": old, "replaced_at": times_before.get(l).cloned().unwrap_or(Value::Null) })).collect::<Vec<_>>(),
+    }).to_string());
+}
+
 fn reconcile_accounts_inner(conn: &rusqlite::Connection, rebaseline: bool) -> Result<(Vec<ReconAccount>, Option<serde_json::Map<String, Value>>), String> {
     let aliases = account_alias_map();
     // Live balances, keyed by the SAME label the importer writes onto bank_txn rows,
     // through the same alias map — otherwise a renamed/re-masked account compares its
     // balance against an empty ledger and reports the whole balance as drift.
-    let mut bank: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
-    let personal = crate::personal::account_keys(conn); // R-660: personal money is not on the books
-    if let Ok(mut stmt) = conn.prepare("SELECT COALESCE(institution,''), accounts_json FROM plaid_items") {
-        if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
-            for (institution, aj) in rows.filter_map(|r| r.ok()) {
-                let accts: Vec<Value> = serde_json::from_str(&aj).unwrap_or_default();
-                for a in &accts {
-                    let kind = a.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                    if kind != "depository" && kind != "credit" { continue; }
-                    if crate::personal::is_personal(&personal, &institution, a) { continue; }
-                    let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                    let mask = a.get("mask").and_then(|v| v.as_str()).unwrap_or("");
-                    let raw = if mask.is_empty() { name.to_string() } else { format!("{} \u{00b7}\u{00b7}{}", name, mask) };
-                    let label = aliases.get(&raw).cloned().unwrap_or(raw);
-                    let cur = a.get("balances").and_then(|b| b.get("current")).and_then(|v| v.as_f64()).unwrap_or(0.0);
-                    // A card's "current" is money OWED — the ledger's sign convention for
-                    // a card is the mirror of a depository account, so negate it here.
-                    let signed = if kind == "credit" { -cur.abs() } else { cur };
-                    *bank.entry(label).or_insert(0.0) += signed;
-                }
-            }
-        }
-    }
+    let (bank, _) = recon_bank_by_label(&recon_items(conn), &aliases);
     if bank.is_empty() {
         return Ok((Vec::new(), None)); // nothing to reconcile against
     }
@@ -29420,6 +29510,65 @@ fn reconcile_accounts_inner(conn: &rusqlite::Connection, rebaseline: bool) -> Re
 /// R-667: the books and the bank agree outright when the posted rows add up to the bank's balance to the cent.
 fn recon_is_exact(bank_balance: f64, posted_net: f64) -> bool {
     (bank_balance - posted_net).abs() < 0.005
+}
+
+#[cfg(test)]
+mod r687_counted_once_tests {
+    use super::{recon_bank_by_label, recon_healed_baseline};
+    use serde_json::json;
+
+    fn card(id: &str, owed: f64) -> serde_json::Value {
+        json!({ "account_id": id, "persistent_account_id": "p-card", "name": "Example Card", "mask": "1009", "type": "credit", "subtype": "credit card", "balances": { "current": owed } })
+    }
+
+    #[test]
+    fn an_account_under_two_bank_links_is_counted_once() {
+        let checking = json!({ "account_id": "c1", "name": "Checking", "mask": "3655", "type": "depository", "subtype": "checking", "balances": { "current": 5431.11 } });
+        // The same card under two links (each link gives it its own account id), and a checking account under one.
+        let items = vec![vec![card("a1", 4242.75), checking.clone()], vec![card("a2", 4242.75)]];
+        let (bank, extra) = recon_bank_by_label(&items, &Default::default());
+        assert_eq!(bank["Example Card \u{00b7}\u{00b7}1009"], -4242.75, "what is owed, once");
+        assert_eq!(extra["Example Card \u{00b7}\u{00b7}1009"], -4242.75, "what the repeat used to add");
+        assert_eq!(bank["Checking \u{00b7}\u{00b7}3655"], 5431.11);
+        assert!(!extra.contains_key("Checking \u{00b7}\u{00b7}3655"));
+        // One link only: nothing is a repeat.
+        let (bank, extra) = recon_bank_by_label(&items[..1], &Default::default());
+        assert_eq!(bank["Example Card \u{00b7}\u{00b7}1009"], -4242.75);
+        assert!(extra.is_empty());
+    }
+
+    #[test]
+    fn two_different_accounts_sharing_a_label_still_add_up() {
+        let a = |pid: &str, bal: f64| json!({ "persistent_account_id": pid, "name": "Savings", "mask": "", "type": "depository", "subtype": "savings", "balances": { "current": bal } });
+        let (bank, extra) = recon_bank_by_label(&[vec![a("p1", 100.0), a("p2", 250.0)]], &Default::default());
+        assert_eq!(bank["Savings"], 350.0);
+        assert!(extra.is_empty());
+    }
+
+    #[test]
+    fn a_starting_point_taken_from_the_doubled_balance_is_replaced() {
+        // The card owed 4,230.77 when the check started with it counted twice, and the books held -4,000.00 of it:
+        // the stored start is 2 x -4,230.77 + 4,000.00 = -4,461.54. Since then one 11.98 charge, in the books.
+        let (start, owed_now, books_now) = (-4461.54_f64, -4242.75_f64, -4011.98_f64);
+        let implied = owed_now - books_now; // counted once: -230.77
+        let drift = implied - start;        // +4,230.77: a whole balance, where the doubled figure read -11.98
+        let healed = recon_healed_baseline(drift, owed_now, implied, 0.0).expect("the start carried the repeat");
+        assert_eq!(healed, -230.77);
+        assert_eq!(((implied - healed) * 100.0).round(), 0.0, "the books agree from here");
+        // A row the transaction check knows is missing stays as the difference.
+        let healed = recon_healed_baseline(drift, owed_now, implied, -60.5).unwrap();
+        assert_eq!(((implied - healed) * 100.0).round() / 100.0, -60.5);
+    }
+
+    #[test]
+    fn a_starting_point_from_before_the_repeat_is_left_alone() {
+        // Taken with the card counted once: the single figure fits (off by a real 25.00), the doubled one does not.
+        assert_eq!(recon_healed_baseline(-25.0, -4242.75, -230.77, 0.0), None);
+        // No repeat at all.
+        assert_eq!(recon_healed_baseline(-4230.77, 0.0, -230.77, 0.0), None);
+        // Agreeing already.
+        assert_eq!(recon_healed_baseline(0.0, -4242.75, -230.77, 0.0), None);
+    }
 }
 
 #[cfg(test)]

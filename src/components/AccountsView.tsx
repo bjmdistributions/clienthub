@@ -9,7 +9,7 @@ import { Button } from "./ui";
 import StatusPill from "./StatusPill";
 import AccountStatement from "./AccountStatement";
 import DriftPanel from "./DriftPanel";
-import { fixedSentence } from "./BooksStatus";
+import { checkSentence } from "./BooksStatus";
 
 // R-659 (Jack, 2026-11-16): "a nice ui where i can check all balances on all cards and accounts in real time. This
 // will display the banks logo and colors. the ui will match the dashboard ui look and will be in finacials tab."
@@ -371,13 +371,15 @@ function LookEditor({ a, mine, brand, onSaved, onClose }: {
   );
 }
 
-export default function AccountsView({ onOpenRow, onFix, onCheckBooks, onChanged }: {
+export default function AccountsView({ onOpenRow, onFix, onCheckBooks, onChanged, onNeeds }: {
   onOpenRow?: (id: string, amount: number) => void;
   onFix?: () => void;
   /** R-685: open the Full check (the Not imported list), where a difference is answered. */
   onCheckBooks?: () => void;
   /** R-685: a check changed the books, so the rest of Financials reads again. */
   onChanged?: () => void;
+  /** R-687: open Needs you, where a transaction the check could not settle by itself is answered. */
+  onNeeds?: () => void;
 }) {
   const [statement, setStatement] = useState<BankBalance | null>(null);
   const [editing, setEditing] = useState<BankBalance | null>(null);
@@ -426,7 +428,7 @@ export default function AccountsView({ onOpenRow, onFix, onCheckBooks, onChanged
     setChecking(true);
     try {
       const c = await api.checkAgainstBank();
-      toast(fixedSentence(c.fixed).replace("The last check", "Checked. It") || "Checked. Nothing had to change.", "success");
+      toast(checkSentence(c), "success");
       onChanged?.();
     } catch (e: unknown) {
       toast(typeof e === "string" ? e : (e as Error)?.message || "The banks could not be read", "error");
@@ -509,7 +511,7 @@ export default function AccountsView({ onOpenRow, onFix, onCheckBooks, onChanged
                   onCheck={() => checkBank(a.key)} checking={checking} whyOpen={open} onWhy={() => setWhy(open ? null : a.key)}>
                   {open && (
                     <div className="mt-3">
-                      <DriftPanel account={a.label} name={a.name} card={a.type === "credit"} onCheckBooks={onCheckBooks} onOpenRow={onOpenRow}
+                      <DriftPanel account={a.label} name={a.name} card={a.type === "credit"} onCheckBooks={onCheckBooks} onOpenRow={onOpenRow} onNeeds={onNeeds}
                         onStatement={() => setStatement(a)} onChanged={() => { load(); onChanged?.(); }} />
                     </div>
                   )}
