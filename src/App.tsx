@@ -2,13 +2,13 @@ import { useEffect, useLayoutEffect, useMemo, useState, useRef, lazy, Suspense }
 import { listen } from "@tauri-apps/api/event";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import {
-  Users, House, FileText, Repeat, Package, Truck, DollarSign, ChartColumn, Ellipsis, SlidersHorizontal,
+  Ellipsis,
   RefreshCw, LogOut,
   PanelLeftClose, PanelLeftOpen,
   Sun, Moon,
   Columns2, X, Wifi, WifiOff, Bell, Search, Pin,
-  type LucideIcon,
 } from "lucide-react";
+import { sectionIcon } from "./lib/sectionIcons";
 import ClientsView from "./components/ClientsView";
 import InvoicesView from "./components/InvoicesView";
 import QuotesView from "./components/QuotesView";
@@ -62,7 +62,7 @@ import { tabSwitchAction, tabToShow } from "./lib/tabSwitch";
 import { useNotices } from "./lib/useNotices";
 import {
   ALL_TABS, SHELL_LAYOUT_EVENT, hiddenSections, landingTab, layoutSections, readShellLayout, shellDrawsHeader, visibleTabs,
-  type SectionDef, type SectionId, type ShellLayout, type TabDef, type TabId,
+  type SectionDef, type ShellLayout, type TabDef, type TabId,
 } from "./lib/sections";
 import Tabs, { type TabItem } from "./components/ui/Tabs";
 import { PageSlotContext } from "./components/ui/PageHeader";
@@ -165,20 +165,6 @@ const RAIL_SEP = 13;   // h-[11px] + the 2px space-y gap
 const RAIL_MENU_ROW =
   "w-full flex items-center gap-2.5 px-2.5 h-8 rounded-lg text-[13px] font-medium " +
   "text-muted hover:text-ink hover:bg-surface-3 transition-colors";
-
-/** The icon of each sidebar section. Plain lucide, 16px, never inside a tile. */
-const SECTION_ICONS: Record<SectionId, LucideIcon> = {
-  home: House,
-  invoices: FileText,
-  deals: Repeat,
-  clients: Users,
-  inventory: Package,
-  logistics: Truck,
-  money: DollarSign,
-  insights: ChartColumn,
-  more: Ellipsis,
-  settings: SlidersHorizontal,
-};
 
 /** Collapsed rail: the open section lists at most this many of its screens (always including the one on
  *  screen). The rail may not scroll, and Deals alone has ten. The rest are in the tab bar and All screens. */
@@ -344,8 +330,21 @@ export default function App() {
   // R-623: the sidebar order, the sections it shows and each section's tab order, as chosen on this computer
   // (Settings > Appearance > Sidebar and tabs). `sections` is the map the shell draws from; SECTIONS stays the default.
   const [layout, setLayout] = useState<ShellLayout | null>(readShellLayout);
+  const layoutRef = useRef(layout);
   useEffect(() => {
-    const handler = (e: Event) => setLayout((e as CustomEvent).detail as ShellLayout | null);
+    const handler = (e: Event) => {
+      const next = (e as CustomEvent).detail as ShellLayout | null;
+      // R-684: a section you just made gets a row on the collapsed rail, like the built-in ones.
+      const had = new Set((layoutRef.current?.custom ?? []).map((c) => c.id));
+      const made = (next?.custom ?? []).map((c) => c.id).filter((id) => !had.has(id));
+      if (made.length) setRailPins((prev) => {
+        const pins = [...prev, ...made.filter((id) => !prev.includes(id))];
+        localStorage.setItem(RAIL_PINS_KEY, JSON.stringify(pins));
+        return pins;
+      });
+      layoutRef.current = next;
+      setLayout(next);
+    };
     window.addEventListener(SHELL_LAYOUT_EVENT, handler);
     return () => window.removeEventListener(SHELL_LAYOUT_EVENT, handler);
   }, []);
@@ -961,7 +960,7 @@ export default function App() {
 
   // One row of the open sidebar, as in the Home mockup: 40px, icon and name, a chip for the number.
   const navItem = (s: SectionDef) => {
-    const Icon = SECTION_ICONS[s.id];
+    const Icon = sectionIcon(s);
     const active = currentSection?.id === s.id;
     return (
       <button
@@ -1048,7 +1047,7 @@ export default function App() {
    *  the ones around it. The open section lists at most RAIL_KIDS_MAX of its screens (always including the
    *  one you are on); the rest are one click away in the tab bar and in All screens. */
   const railPlan = (() => {
-    const sectionId: SectionId | null =
+    const sectionId: string | null =
       currentSection && currentSection.id !== "settings" && sectionShown(currentSection) ? currentSection.id : null;
 
     type Row = { section: SectionDef; kids: TabDef[]; rank: number; at: number; h: number };
@@ -1241,7 +1240,7 @@ export default function App() {
         items={items}
         value={t}
         onSelect={(id) => onSelect(id as Tab)}
-        shell={shellDrawsHeader(t)}
+        shell={shellDrawsHeader(t, sec)}
         bleed={t === "globe"}
       >
         {content}
@@ -1297,7 +1296,7 @@ export default function App() {
 
               {railPlan.rows.map(({ section, kids }) => (
                 <div key={section.id} className="space-y-0.5">
-                  {railRow(section.id, section.label, SECTION_ICONS[section.id], section.id === railPlan.sectionId, sectionCount(section), () => openSection(section))}
+                  {railRow(section.id, section.label, sectionIcon(section), section.id === railPlan.sectionId, sectionCount(section), () => openSection(section))}
                   {kids.length > 0 && (
                     <div className="relative px-[9px] mt-[3px] mb-[5px] space-y-0.5">
                       <span className="rail-spine absolute left-[3px] top-0.5 bottom-0.5 w-[1.5px] rounded-full" aria-hidden />
@@ -1320,7 +1319,7 @@ export default function App() {
             screens, which lists every screen this role can reach. */}
         <div className="flex-shrink-0 pt-2 space-y-0.5">
           {navCollapsed
-            ? (sectionShown(settingsSection) ? railRow(settingsSection.id, settingsSection.label, SECTION_ICONS.settings, currentSection?.id === "settings", null, () => openSection(settingsSection)) : null)
+            ? (sectionShown(settingsSection) ? railRow(settingsSection.id, settingsSection.label, sectionIcon(settingsSection), currentSection?.id === "settings", null, () => openSection(settingsSection)) : null)
             : sections.filter((s) => (s.id === "more" || s.id === "settings") && !hidden.has(s.id) && sectionShown(s)).map(navItem)}
         </div>
 

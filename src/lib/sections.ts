@@ -19,10 +19,13 @@ export type SectionId = "home" | "invoices" | "deals" | "clients" | "inventory" 
 
 export interface TabDef { id: TabId; label: string }
 export interface SectionDef {
-  id: SectionId;
+  /** A SectionId, or the id of a section you made (R-684). */
+  id: string;
   label: string;
   /** The screens in tab order. The first one the account may open is where a click on the section lands. */
   tabs: TabDef[];
+  /** R-684: a section you made carries the name of the icon you picked for it (lib/sectionIcons.ts). */
+  icon?: string;
 }
 
 export const SECTIONS: SectionDef[] = [
@@ -102,15 +105,16 @@ export function landingTab(section: SectionDef, visible: (id: TabId) => boolean,
   return open[0]?.id ?? null;
 }
 
-/** One-screen sections whose screen fills the shell's action slot (<PageActions>) instead of drawing its
- *  own PageHeader, so the shell still draws the title and slot (no tab bar with one screen). */
-const SHELL_HEADED_SINGLE: SectionId[] = ["invoices"];
+/** The screens that draw their own PageHeader when they are alone in their section. Every other screen
+ *  fills the shell's action slot (<PageActions>), so the shell draws its title and slot even when the
+ *  screen is alone (Invoices, R-605, or any screen you put in a section of its own, R-684). */
+const SELF_HEADED: string[] = ["dashboard", "logistics", "settings"];
 
-/** Whether the shell draws its own header (section title, action slot and tab bar) for a screen.
- *  Sections that group several screens get one; Home, Logistics and Settings draw their own. */
-export function shellDrawsHeader(id: string): boolean {
-  const s = sectionOfTab(id);
-  return !!s && (s.tabs.length > 1 || SHELL_HEADED_SINGLE.includes(s.id));
+/** Whether the shell draws its own header (section title, action slot and tab bar) for a screen, in the
+ *  section it sits in (the default map unless the layout's section is passed). A section that groups
+ *  several screens always gets one; a self-headed screen grouped with others then yields its title to it. */
+export function shellDrawsHeader(id: string, section: SectionDef | undefined = sectionOfTab(id)): boolean {
+  return !!section && (section.tabs.length > 1 || !SELF_HEADED.includes(id));
 }
 
 // ── R-623: the layout you chose for this computer ────────────────────────────────────────────────
@@ -122,26 +126,53 @@ export function shellDrawsHeader(id: string): boolean {
 export const SHELL_LAYOUT_KEY = "clienthub_shell_layout";
 export const SHELL_LAYOUT_EVENT = "shell-layout-change";
 
+/** R-684: a section you made. Its screens are the ones `tabs[id]` lists. */
+export interface CustomSection { id: string; label: string; icon: string }
+
 export interface ShellLayout {
   /** Section ids in sidebar order. A section not listed comes after these, in default order. */
   sections: string[];
   /** Sections kept off the sidebar. Home and Settings can never be hidden. */
   hidden: string[];
-  /** Screen ids in tab order, per section. A screen not listed comes after these, in default order. */
+  /** Screen ids in tab order, per section. Since R-684 this is also where a screen lives: one listed under
+   *  another section has moved there. A screen listed nowhere stays in its default section, after the listed ones. */
   tabs: Record<string, string[]>;
+  /** R-684: the sections you made, which sit just above More until you move them. */
+  custom?: CustomSection[];
+  /** R-684: the names you gave the built-in sections. */
+  labels?: Record<string, string>;
 }
 
 /** Sections that always stay on the sidebar: Home is where the app lands, Settings is where you put the rest back. */
 export const ALWAYS_SHOWN: SectionId[] = ["home", "settings"];
+/** R-684: screens that never leave their section, and the sections no screen moves into, for the same reason. */
+export const FIXED_TABS: string[] = ["dashboard", "settings"];
+export const CLOSED_SECTIONS: string[] = ["home", "settings"];
+/** Longest name a section can be given; the open sidebar is 216px wide. */
+export const SECTION_NAME_MAX = 24;
+
+const isStr = (s: unknown): s is string => typeof s === "string";
 
 export function readShellLayout(): ShellLayout | null {
   try {
     const v = JSON.parse(localStorage.getItem(SHELL_LAYOUT_KEY) || "null");
     if (!v || typeof v !== "object") return null;
+    const tabs: Record<string, string[]> = {};
+    if (v.tabs && typeof v.tabs === "object") {
+      for (const [k, ids] of Object.entries(v.tabs)) if (Array.isArray(ids)) tabs[k] = ids.filter(isStr);
+    }
+    const labels: Record<string, string> = {};
+    if (v.labels && typeof v.labels === "object") {
+      for (const [k, l] of Object.entries(v.labels)) if (isStr(l) && l.trim()) labels[k] = l;
+    }
     return {
-      sections: Array.isArray(v.sections) ? v.sections.filter((s: unknown) => typeof s === "string") : [],
-      hidden: Array.isArray(v.hidden) ? v.hidden.filter((s: unknown) => typeof s === "string") : [],
-      tabs: v.tabs && typeof v.tabs === "object" ? v.tabs : {},
+      sections: Array.isArray(v.sections) ? v.sections.filter(isStr) : [],
+      hidden: Array.isArray(v.hidden) ? v.hidden.filter(isStr) : [],
+      tabs,
+      custom: Array.isArray(v.custom)
+        ? v.custom.filter((c: any) => c && isStr(c.id) && isStr(c.label)).map((c: any) => ({ id: c.id, label: c.label, icon: isStr(c.icon) ? c.icon : "folder" }))
+        : [],
+      labels,
     };
   } catch { return null; }
 }
@@ -153,10 +184,107 @@ function ordered<T extends { id: string }>(defaults: T[], chosen: string[] | und
   return [...picked, ...defaults.filter((d) => !picked.includes(d))];
 }
 
-/** Every section in the chosen sidebar order, each with its screens in the chosen tab order. */
+/** Every section in the chosen sidebar order, with the names you gave them and the sections you made,
+ *  each holding the screens that live in it in the chosen tab order. A section can come out empty when
+ *  every screen was moved out of it; the shell then leaves it off the sidebar (landingTab is null). */
 export function layoutSections(layout: ShellLayout | null): SectionDef[] {
   if (!layout) return SECTIONS;
-  return ordered(SECTIONS, layout.sections).map((s) => ({ ...s, tabs: ordered(s.tabs, layout.tabs[s.id]) }));
+  const made: SectionDef[] = (layout.custom ?? [])
+    .filter((c) => !SECTIONS.some((s) => s.id === c.id))
+    .map((c) => ({ id: c.id, label: c.label, icon: c.icon, tabs: [] }));
+  const more = SECTIONS.findIndex((s) => s.id === "more");
+  const order = ordered([...SECTIONS.slice(0, more), ...made, ...SECTIONS.slice(more)], layout.sections);
+  // Where each screen lives: the first section in sidebar order that lists it, else its default section.
+  const home = new Map<string, string>();
+  for (const s of order) {
+    if (CLOSED_SECTIONS.includes(s.id)) continue;
+    for (const id of layout.tabs[s.id] ?? []) {
+      if (!home.has(id) && !FIXED_TABS.includes(id) && ALL_TABS.some((t) => t.id === id)) home.set(id, s.id);
+    }
+  }
+  return order.map((s) => ({
+    ...s,
+    label: layout.labels?.[s.id] || s.label,
+    tabs: ordered(ALL_TABS.filter((t) => (home.get(t.id) ?? sectionOfTab(t.id)?.id) === s.id), layout.tabs[s.id]),
+  }));
+}
+
+/** R-684: whether a section is one you made (it can be removed; a built-in one cannot). */
+export function isCustomSection(layout: ShellLayout | null, id: string): boolean {
+  return !!layout?.custom?.some((c) => c.id === id) && !SECTIONS.some((s) => s.id === id);
+}
+
+/** R-684: move a screen into a section (its own or another) at `index` among that section's other screens.
+ *  Both sections' lists are written out in full, so the screen is listed in exactly one place. */
+export function moveTab(layout: ShellLayout, tabId: string, to: string, index: number): ShellLayout {
+  if (FIXED_TABS.includes(tabId) || CLOSED_SECTIONS.includes(to)) return layout;
+  const secs = layoutSections(layout);
+  const from = secs.find((s) => s.tabs.some((t) => t.id === tabId));
+  const dest = secs.find((s) => s.id === to);
+  if (!from || !dest) return layout;
+  const fromIds = from.tabs.map((t) => t.id).filter((id) => id !== tabId);
+  const destIds = from.id === to ? fromIds : dest.tabs.map((t) => t.id);
+  const at = Math.max(0, Math.min(index, destIds.length));
+  if (from.id === to && from.tabs[at]?.id === tabId) return layout;
+  return {
+    ...layout,
+    tabs: { ...layout.tabs, [from.id]: fromIds, [to]: [...destIds.slice(0, at), tabId, ...destIds.slice(at)] },
+  };
+}
+
+/** The sections that move: everything above More (More and Settings keep the bottom). */
+function movableIds(layout: ShellLayout): string[] {
+  return layoutSections(layout).map((s) => s.id).filter((id) => id !== "more" && id !== "settings");
+}
+
+/** R-684: move a section to `index` among the other movable sections. */
+export function moveSection(layout: ShellLayout, id: string, index: number): ShellLayout {
+  const ids = movableIds(layout);
+  const was = ids.indexOf(id);
+  if (was < 0) return layout;
+  const rest = ids.filter((x) => x !== id);
+  const at = Math.max(0, Math.min(index, rest.length));
+  if (at === was) return layout;
+  return { ...layout, sections: [...rest.slice(0, at), id, ...rest.slice(at)] };
+}
+
+/** R-684: a new, empty section of your own, just above More. */
+export function addSection(layout: ShellLayout, id: string, label: string, icon = "folder"): ShellLayout {
+  return { ...layout, custom: [...(layout.custom ?? []), { id, label, icon }] };
+}
+
+/** R-684: remove a section you made. Its screens go back to their default sections. */
+export function removeSection(layout: ShellLayout, id: string): ShellLayout {
+  if (!isCustomSection(layout, id)) return layout;
+  const tabs = { ...layout.tabs };
+  delete tabs[id];
+  return {
+    ...layout,
+    tabs,
+    custom: (layout.custom ?? []).filter((c) => c.id !== id),
+    sections: layout.sections.filter((s) => s !== id),
+    hidden: layout.hidden.filter((h) => h !== id),
+  };
+}
+
+/** R-684: rename a section. An empty name, or a built-in section's own name, puts the default back. */
+export function renameSection(layout: ShellLayout, id: string, name: string): ShellLayout {
+  const label = name.trim().slice(0, SECTION_NAME_MAX);
+  if (isCustomSection(layout, id)) {
+    if (!label) return layout;
+    return { ...layout, custom: (layout.custom ?? []).map((c) => (c.id === id ? { ...c, label } : c)) };
+  }
+  const def = sectionById(id);
+  if (!def) return layout;
+  const labels = { ...(layout.labels ?? {}) };
+  if (!label || label === def.label) delete labels[id];
+  else labels[id] = label;
+  return { ...layout, labels };
+}
+
+/** R-684: change the icon of a section you made. */
+export function setSectionIcon(layout: ShellLayout, id: string, icon: string): ShellLayout {
+  return { ...layout, custom: (layout.custom ?? []).map((c) => (c.id === id ? { ...c, icon } : c)) };
 }
 
 /** The sections the sidebar leaves out. Their screens stay reachable from search, All screens and split view. */
