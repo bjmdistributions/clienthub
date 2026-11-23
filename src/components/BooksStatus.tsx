@@ -8,7 +8,7 @@ import { Button } from "./ui";
 // R-670 (Jack, 2026-11-18: "In a perfect world, my books and ledger every single day match 100% with all my accounts.
 // I open ecliptr finacials to see new transactions, i can link them and book them"). The one answer at the top of
 // every Financials screen: do the books match the bank. Green when every account agrees; otherwise what needs a
-// person, each with the one place it is answered. Check now reads the banks' posted lists and puts the books right
+// person, each with the one place it is answered. Check against bank reads the banks' posted lists and puts the books right
 // (`check_against_bank`), and the strip says what that run did.
 
 type Go = "setup" | "needs" | "tobook" | "accounts";
@@ -114,8 +114,9 @@ export default function BooksStatus({ reloadKey, needs, onGo, onChanged }: {
           </div>
         )}
       </div>
-      <Button onClick={run} disabled={busy} title="Read every posted transaction from your banks and put the books right">
-        <RefreshCw size={14} className={busy ? "animate-spin" : ""} /> {busy ? "Checking" : "Check now"}
+      {/* R-685: named Check against bank again. As Check now he took the button to be gone. */}
+      <Button onClick={run} disabled={busy} title="Reads every posted transaction, in and out, from your banks, puts the books right where it can, and lists what is still different">
+        <RefreshCw size={14} className={busy ? "animate-spin" : ""} /> {busy ? "Checking against the bank" : "Check against bank"}
       </Button>
     </div>
   );

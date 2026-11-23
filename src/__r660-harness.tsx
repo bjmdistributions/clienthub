@@ -65,6 +65,17 @@ const looks: Record<string, any> = { a4: { color: "#AEAEB2" } };
       }
       return { ...looks };
     }
+    // R-685: Check against bank from Accounts, and the differences under an Off from books row.
+    case "check_against_bank": return { checked_at: new Date().toISOString(), accounts: [], missing: 2, differs: 0, not_at_bank: 0, new_rows: 0, closed: 0, errors: [],
+      fixed: { imported: 3, amended: 0, removed: 1, moved: 0, two_payments: 0, copies: 0, agreed: 0 } };
+    case "explain_bank_drift": return {
+      account: "Operating ··0451", bank_balance: 9312.4, ledger_net: 100, baseline: 9297.9, baseline_at: d(40), drift: -85.5, books_balance: 9397.9,
+      causes: [{ kind: "missing", effect: -85.5, rows: [
+        { id: "m1", date: d(3), description: "PAPER SUPPLY CO", amount: 60.5, direction: "out", effect: -60.5 },
+        { id: "m2", date: d(2), description: "MONTHLY SERVICE FEE", amount: 25, direction: "out", effect: -25 },
+      ] }],
+      explained: -85.5, residual: 0, statement: null, bank_check: { posted: 212, exact: 210, not_exact: 2, checked_at: new Date().toISOString() },
+    };
     case "site_logo": return logo("S", "#007AFF");
     case "plaid_refresh_sync": return { refresh_refused: [] };
     case "personal_overview": return {

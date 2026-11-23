@@ -858,7 +858,7 @@ export default function FinancialsView() {
   const [personalOwner, setPersonalOwner] = useState(false);
   useEffect(() => { api.personalMe().then((r) => setPersonalOwner(r.owner)).catch(() => setPersonalOwner(false)); }, []);
   // R-678: how many accounts are marked red on Accounts (books off the bank, or the bank needs reconnecting), counted
-  // in red on its tab. Read again after every sync.
+  // in red on its tab. Read again after every sync, and whenever the ledger's rows change (a check against the bank).
   const [acctIssues, setAcctIssues] = useState(0);
   useEffect(() => {
     const read = () => api.bankBalances().then((r) => setAcctIssues(r.accounts.filter((a) => accountIssue(a, fmtAmount)).length)).catch(() => {});
@@ -867,7 +867,7 @@ export default function FinancialsView() {
     let dead = false;
     listen("netsync-applied", () => { read(); }).then((u) => { if (dead) u(); else un = u; }).catch(() => {});
     return () => { dead = true; un?.(); };
-  }, []);
+  }, [txns]);
   // R-579: Check books. Loaded when the tab opens and after any change on the screen.
   const [checkBooks, setCheckBooks] = useState<CheckAccount[] | null>(null);
   const [checkBooksError, setCheckBooksError] = useState("");
@@ -3650,7 +3650,8 @@ export default function FinancialsView() {
           accounts as the Ledger's category picker; nothing here reads any table
           other than bank_txn, so this figure and the Ledger's totals can never
           silently drift apart. */}
-      {tab === "accounts" && <AccountsView onOpenRow={openLedgerRow} onFix={() => setTab("setup")} />}
+      {tab === "accounts" && <AccountsView onOpenRow={openLedgerRow} onFix={() => setTab("setup")} onCheckBooks={() => setTab("check")}
+        onChanged={() => { needs.reload(); refreshAll(false); }} />}
       {tab === "personal" && personalOwner && <PersonalView />}
       {tab === "personal" && !personalOwner && <p className="ui-note">Personal spending is only for the workspace owner.</p>}
       {tab === "report" && <BalancesAndTax onToBook={() => setTab("tobook")} onCheckBooks={() => setTab("check")} onOpenRow={openLedgerRow} />}
