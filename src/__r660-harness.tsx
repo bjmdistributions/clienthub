@@ -49,6 +49,7 @@ function cardPicture(): string {
   return c.toDataURL("image/jpeg", 0.85).split("base64,")[1];
 }
 let checkRuns = 0;
+let taxKeys = "a2";
 const declined: any[] = [
   { id: "d1", txn_id: "t1", source: "plaid", reason: "missing", account_id: "Operating \u00b7\u00b70451", posted_at: d(3), amount: 60.5, direction: "out",
     description: "PAPER SUPPLY CO", matched: [], bank: {}, status: "open", resolved_by: "", resolved_at: "", created_at: d(1) },
@@ -141,10 +142,18 @@ const looks: Record<string, any> = { a4: { color: "#AEAEB2" }, a9: { art: cardPi
       { account: "Operating ··0451", bank_balance: 9312.4, ledger_net: 100, implied_opening: 1, baseline: 2, drift: -85.5, txn_count: 3, settled_before: 0 },
     ];
     case "financials_overview": return {
-      tax_base: 64000, tax_reserve: 19200, tax_paid: 4000, tax_should_have: 15200, tax_sweep_pct: 0.3, reserve_account_key: "a2",
+      tax_base: 64000, tax_reserve: 19200, tax_paid: 4000, tax_should_have: 15200, tax_sweep_pct: 0.3, reserve_account_key: taxKeys,
       balance_source: "plaid",
       tax_extra: { reserve_in_year: 14000, reserve_out_year: 4000, uncategorised_in: 1250, uncategorised_out: 3380.4, uncategorised_rows: 7 },
     };
+    // R-689: the tax savings accounts he ticks (one key per line), and invented months for the dashboard.
+    case "set_money_config": taxKeys = args?.reserveAccountKey ?? taxKeys; return null;
+    case "payouts_request": return args?.path === "/api/payouts/tax-months" ? {
+      year: new Date().getFullYear(), rate: 0.3, due_closed: 17100, this_month: 2100, set_aside_year: 19200, tax_paid: 4000,
+      months: [["01", -6000, 0], ["02", 4000, 0], ["03", 9000, 2100], ["04", 12500, 3750], ["05", -3500, -1050], ["06", 8000, 2400],
+               ["07", 11000, 3300], ["08", 6500, 1950], ["09", 9500, 2850], ["10", 6000, 1800], ["11", 7000, 2100]]
+        .map(([m, net, due], i) => ({ month: `${new Date().getFullYear()}-${m}`, net, base: net, due, closed: i < 10 })),
+    } : null;
     case "get_money_config": return { bank_balance: 0, credit_card_balance: 0, cash_floor: 0, tax_sweep_pct: 0.3, refund_reserve_pct: 0, war_chest: 0 };
     default: return null;
   }

@@ -24265,17 +24265,19 @@ fn publish_balance_and_health() {
     // screen does. Its balance is already out of `bal` (plaid_balances leaves it out). Amounts and a label only.
     let reserve = {
         let (_, _, _, parked, linked) = plaid_balances_split(&conn);
-        let key = reserve_account_key(&conn);
-        let cands = if key.is_empty() { Vec::new() } else { plaid_reserve_candidates(&conn) };
-        let chosen = cands.iter().find(|a| a.get("key").and_then(|v| v.as_str()) == Some(key.as_str()));
-        let label = chosen.map(|a| format!("{} · {}",
+        let keys = reserve_account_keys(&conn);
+        let cands = if keys.is_empty() { Vec::new() } else { plaid_reserve_candidates(&conn) };
+        // R-689: every tax savings account he picked; `parked` is already their sum.
+        let chosen: Vec<&Value> = cands.iter().filter(|a| a.get("key").and_then(|v| v.as_str()).is_some_and(|k| keys.iter().any(|x| x == k))).collect();
+        let label = chosen.iter().map(|a| format!("{} · {}",
                 a.get("institution").and_then(|v| v.as_str()).unwrap_or(""),
                 a.get("name").and_then(|v| v.as_str()).unwrap_or("Account")))
-            .unwrap_or_default();
+            .collect::<Vec<_>>().join(" and ");
         // R-579: the last four too, so the server can find the account's rows in the mirror for the
         // phone's "moved in per the ledger" line. Not a secret: it is on every row's label already.
-        let mask = chosen.and_then(|a| a.get("mask").and_then(|v| v.as_str())).unwrap_or("").to_string();
-        json!({ "designated": !key.is_empty(), "linked": linked, "parked": (parked * 100.0).round() / 100.0, "label": label, "mask": mask })
+        // With several accounts it is the first one's: the server holds one account's rows against it.
+        let mask = chosen.first().and_then(|a| a.get("mask").and_then(|v| v.as_str())).unwrap_or("").to_string();
+        json!({ "designated": !keys.is_empty(), "linked": linked, "parked": (parked * 100.0).round() / 100.0, "label": label, "mask": mask })
     };
     // R-587: the last Check against bank, so the phone shows it and pushes a difference.
     let bank_check: Value = conn.query_row("SELECT value FROM settings WHERE key='bank_check'", [], |r| r.get::<_, String>(0))
@@ -24475,6 +24477,21 @@ fn reserve_account_key(conn: &rusqlite::Connection) -> String {
         .unwrap_or_default().trim().to_string()
 }
 
+/// R-689 (Jack, 2026-11-24: "allow me to select two accounts at least for the tax page"). The tax savings accounts,
+/// one `plaid_account_key` per line of the same setting (a key holds no line break), so a single account picked
+/// before reads as it always did. Their balances add up to what is held for tax.
+fn reserve_account_keys(conn: &rusqlite::Connection) -> Vec<String> {
+    reserve_keys_of(&reserve_account_key(conn))
+}
+
+fn reserve_keys_of(setting: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for k in setting.lines().map(str::trim).filter(|k| !k.is_empty()) {
+        if !out.iter().any(|o| o == k) { out.push(k.to_string()); }
+    }
+    out
+}
+
 /// Live balances from connected Plaid banks, captured in each item's accounts_json
 /// at link time: depository accounts (checking/savings) sum to the bank balance,
 /// credit accounts to the card owed. Returns (bank, card, any_bank_connected).
@@ -24497,7 +24514,7 @@ fn plaid_balances_split(conn: &rusqlite::Connection) -> (f64, f64, bool, f64, bo
     let mut any = false;
     let mut reserve_parked = 0.0;
     let mut reserve_found = false;
-    let reserve_key = reserve_account_key(conn);
+    let reserve_keys = reserve_account_keys(conn);
     // R-660: a personal account is no business money.
     let personal = crate::personal::account_keys(conn);
     let mut stmt = match conn.prepare("SELECT COALESCE(institution,''), accounts_json FROM plaid_items") {
@@ -24525,7 +24542,7 @@ fn plaid_balances_split(conn: &rusqlite::Connection) -> (f64, f64, bool, f64, bo
             if kind != "credit" && kind != "depository" { continue; }
             if crate::personal::is_personal(&personal, &institution, a) { continue; }
             let key = plaid_account_key(a);
-            let is_reserve = !reserve_key.is_empty() && key == reserve_key;
+            let is_reserve = reserve_keys.contains(&key); // R-689: any of the tax savings accounts
             if !seen.insert(key) { continue; } // already counted through another item
             let cur = a.get("balances").and_then(|b| b.get("current")).and_then(|v| v.as_f64()).unwrap_or(0.0);
             match kind {
@@ -24771,13 +24788,16 @@ pub async fn financials_overview() -> Result<Value, String> {
     let (plaid_bank, plaid_card, has_plaid, reserve_parked, reserve_linked) = plaid_balances_split(&conn);
     let reserve_key = reserve_account_key(&conn);
     let reserve_candidates = plaid_reserve_candidates(&conn);
-    let reserve_label = reserve_candidates.iter()
-        .find(|a| a.get("key").and_then(|v| v.as_str()) == Some(reserve_key.as_str()))
+    // R-689: one or several tax savings accounts.
+    let reserve_keys = reserve_keys_of(&reserve_key);
+    let reserve_chosen: Vec<&Value> = reserve_candidates.iter()
+        .filter(|a| a.get("key").and_then(|v| v.as_str()).is_some_and(|k| reserve_keys.iter().any(|x| x == k))).collect();
+    let reserve_label = Some(reserve_chosen.iter()
         .map(|a| format!(
             "{} · {}",
             a.get("institution").and_then(|v| v.as_str()).unwrap_or(""),
             a.get("name").and_then(|v| v.as_str()).unwrap_or("Account"),
-        ))
+        )).collect::<Vec<_>>().join(" and ")).filter(|s| !s.is_empty())
         .unwrap_or_default();
     // Balance sharing: a device WITH the Plaid link publishes its fresh balance so
     // devices without it (Mac, mobile) can show it; a device WITHOUT the link reads
@@ -24909,9 +24929,9 @@ pub async fn financials_overview() -> Result<Value, String> {
     // in less out; the drift is the per-account check Free cash already runs (what the bank's
     // balance implies the account opened with, against the baseline recorded for it), here for
     // this one account, so "the ledger and the bank disagree" is said beside the target.
-    let reserve_mask = reserve_candidates.iter()
-        .find(|a| a.get("key").and_then(|v| v.as_str()) == Some(reserve_key.as_str()))
-        .and_then(|a| a.get("mask").and_then(|v| v.as_str())).unwrap_or("").to_string();
+    let reserve_masks: Vec<String> = reserve_chosen.iter()
+        .filter_map(|a| a.get("mask").and_then(|v| v.as_str()).filter(|m| !m.is_empty()).map(str::to_string)).collect();
+    let reserve_mask = reserve_masks.first().cloned().unwrap_or_default();
     let (reserve_ledger_year, reserve_drift): (f64, Option<f64>) = if reserve_mask.is_empty() || !reserve_linked {
         (0.0, None)
     } else {
@@ -24919,13 +24939,16 @@ pub async fn financials_overview() -> Result<Value, String> {
         let on_mask = format!("instr(account_id,'{sep}')>0 AND substr(account_id, instr(account_id,'{sep}')+2)=?1");
         // R-667: posted rows only, like the books check (the bank's balance holds no pending row yet).
         let counted = format!("{} AND NOT ({})", crate::bank_flags::counted("bank_txn"), crate::bank_flags::pending("bank_txn"));
-        let net = |since: &str| -> f64 {
+        let net_on = |mask: &str, since: &str| -> f64 {
             conn.query_row(
                 &format!("SELECT COALESCE(SUM(CASE WHEN direction='in' THEN amount ELSE -amount END),0) FROM bank_txn \
                           WHERE {on_mask} AND posted_at >= '{since}' AND {counted}"),
-                [&reserve_mask], |r| r.get(0)).unwrap_or(0.0)
+                [mask], |r| r.get(0)).unwrap_or(0.0)
         };
-        let year = net(&format!("{}-01-01", chrono::Datelike::year(&chrono::Local::now())));
+        let net = |since: &str| -> f64 { net_on(&reserve_mask, since) };
+        // R-689: this year's net over every tax savings account.
+        let year_from = format!("{}-01-01", chrono::Datelike::year(&chrono::Local::now()));
+        let year: f64 = reserve_masks.iter().map(|m| net_on(m, &year_from)).sum();
         let all = net("");
         let baselines: Value = conn
             .query_row("SELECT value FROM settings WHERE key='recon_baselines'", [], |r| r.get::<_, String>(0))
@@ -24937,7 +24960,9 @@ pub async fn financials_overview() -> Result<Value, String> {
         let settled: f64 = baseline.as_ref().and_then(|(k, _)| recon_baseline_times().get(k).and_then(|v| v.as_str())
             .map(|at| recon_settled_before(&conn, &account_alias_map(), k, at, &mut None).iter().map(|x| x.1).sum())).unwrap_or(0.0);
         let baseline = baseline.and_then(|(_, v)| v);
-        let drift = if recon_is_exact(reserve_parked, all) { Some(0.0) }
+        // R-689: with several accounts there is no one books check to quote here; each has its own on Accounts.
+        let drift = if reserve_masks.len() > 1 { None }
+            else if recon_is_exact(reserve_parked, all) { Some(0.0) }
             else { baseline.map(|b| ((reserve_parked - all + settled) - b) * 100.0).map(|d| d.round() / 100.0) };
         (year, drift)
     };
@@ -24947,12 +24972,13 @@ pub async fn financials_overview() -> Result<Value, String> {
     let (reserve_in_year, reserve_out_year): (f64, f64) = if reserve_mask.is_empty() || !reserve_linked { (0.0, 0.0) } else {
         let sep = "\u{00b7}\u{00b7}";
         let since = format!("{}-01-01", chrono::Datelike::year(&chrono::Local::now()));
+        // R-689: over every tax savings account.
         let side = |dir: &str| -> f64 {
-            conn.query_row(
+            reserve_masks.iter().map(|mask| conn.query_row(
                 &format!("SELECT COALESCE(SUM(amount),0) FROM bank_txn \
                           WHERE instr(account_id,'{sep}')>0 AND substr(account_id, instr(account_id,'{sep}')+2)=?1 \
                             AND posted_at >= ?2 AND direction=?3 AND {}", crate::bank_flags::counted("bank_txn")),
-                rusqlite::params![reserve_mask, since, dir], |r| r.get(0)).unwrap_or(0.0)
+                rusqlite::params![mask, since, dir], |r| r.get::<_, f64>(0)).unwrap_or(0.0)).sum()
         };
         (side("in"), side("out"))
     };
@@ -29620,6 +29646,19 @@ fn reconcile_accounts_inner(conn: &rusqlite::Connection, rebaseline: bool) -> Re
 /// R-667: the books and the bank agree outright when the posted rows add up to the bank's balance to the cent.
 fn recon_is_exact(bank_balance: f64, posted_net: f64) -> bool {
     (bank_balance - posted_net).abs() < 0.005
+}
+
+#[cfg(test)]
+mod r689_tax_accounts_tests {
+    use super::reserve_keys_of;
+
+    #[test]
+    fn one_key_per_line_and_an_old_single_key_reads_as_before() {
+        assert_eq!(reserve_keys_of("p:abc"), vec!["p:abc"]);
+        assert_eq!(reserve_keys_of("p:abc\nn:tax savings|0416|savings\n"), vec!["p:abc", "n:tax savings|0416|savings"]);
+        assert_eq!(reserve_keys_of(" p:abc \r\n\r\np:abc\n p:def "), vec!["p:abc", "p:def"], "blank lines and repeats are dropped");
+        assert!(reserve_keys_of("").is_empty());
+    }
 }
 
 #[cfg(test)]
