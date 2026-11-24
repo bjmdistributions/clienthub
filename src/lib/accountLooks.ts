@@ -40,14 +40,42 @@ export function darkText(hex: string): boolean {
   return luminance(hex) > 0.4;
 }
 
-export interface AccountIssue { kind: "connection" | "books"; text: string }
+// R-688 (Jack, 2026-11-24): "it look at the most current and up to sate bank balance. if it does not match waht out
+// ledger records has. the system needs to on its own check every single transaction against the books to find
+// discrepencyies ... if i wanted to manual check this stuff i would have already done it." What an account's row
+// says is the outcome of that automatic transaction check, never a bare "off by" figure for him to chase:
+//   match      the books fit the bank's balance, or the check found nothing left on the account
+//   checking   the balance does not fit and the transactions are being checked now (no click)
+//   answer     the check is done and these exact transactions need his answer, shown under the row
+//   waiting    everything is checked and answered; the bank's own balance has not caught up yet
+//   unread     the bank could not be read for the account just now; it is tried again by itself
+//   connection the bank needs reconnecting, so nothing can be checked
+//   elsewhere  another of his computers feeds and checks this account
+export type AccountCheck =
+  | { kind: "none" } | { kind: "match" } | { kind: "checking" } | { kind: "waiting" } | { kind: "unread" } | { kind: "connection" }
+  | { kind: "answer"; count: number } | { kind: "elsewhere"; on: string };
 
-/** What is wrong with an account, worst first: its bank needs reconnecting, or the books do not match the bank. */
-export function accountIssue(a: { needs_fix?: boolean; drift: number | null }, fmt: (n: number) => string): AccountIssue | null {
-  if (a.needs_fix) return { kind: "connection", text: "The bank connection needs fixing, so this balance may be old." };
-  if (a.drift != null && Math.abs(a.drift) >= 0.005) return { kind: "books", text: `Your books are ${fmt(Math.abs(a.drift))} away from what the bank shows.` };
-  return null;
+export function accountCheck(
+  a: { type: string; needs_fix?: boolean; drift: number | null; checked?: boolean | null; checked_on?: string | null },
+  /** How many transactions on this account are waiting on his answer. */
+  todo: number,
+  /** A check is running now. */
+  running: boolean,
+  /** A check already ran for the state this account is in. */
+  tried: boolean,
+): AccountCheck {
+  if (a.type !== "depository" && a.type !== "credit") return { kind: "none" };
+  if (a.needs_fix) return { kind: "connection" };
+  if (a.drift == null) return a.checked_on ? { kind: "elsewhere", on: a.checked_on } : { kind: "none" };
+  if (todo > 0) return { kind: "answer", count: todo };
+  if (Math.abs(a.drift) < 0.005) return { kind: "match" };
+  if (running) return { kind: "checking" };
+  if (a.checked) return { kind: "waiting" };
+  return tried ? { kind: "unread" } : { kind: "checking" };
 }
+
+/** Whether the row is marked red: only when there is something for him to do. */
+export const needsALook = (c: AccountCheck) => c.kind === "connection" || c.kind === "answer";
 
 // R-683 (Jack, 2026-11-23): "preset platinum gold cards in theer and pulling predesigns for all other business cards".
 // A credit card is drawn in a preset finish: the metal or colour its name says (a card named Platinum is platinum),

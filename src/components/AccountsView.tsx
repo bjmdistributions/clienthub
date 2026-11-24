@@ -3,12 +3,12 @@ import { listen } from "@tauri-apps/api/event";
 import { Check, ListChecks, Palette, RefreshCw } from "lucide-react";
 import { api, AccountLook, BankBalance, BankBrand } from "../lib/api";
 import { fmtAmount } from "../lib/format";
-import { accountIssue, AccountIssue, CARD_CHIP, CARD_COLOURS, CARD_DEFAULT, CARD_FINISHES, CardFinish, darkText, finishFor } from "../lib/accountLooks";
+import { accountCheck, AccountCheck, needsALook, CARD_CHIP, CARD_COLOURS, CARD_DEFAULT, CARD_FINISHES, CardFinish, darkText, finishFor } from "../lib/accountLooks";
 import { toast } from "./Toast";
 import { Button } from "./ui";
 import StatusPill from "./StatusPill";
 import AccountStatement from "./AccountStatement";
-import DriftPanel from "./DriftPanel";
+import NeedsYou, { needsOnAccount, useNeedsYou } from "./NeedsYou";
 import { checkSentence } from "./BooksStatus";
 
 // R-659 (Jack, 2026-11-16): "a nice ui where i can check all balances on all cards and accounts in real time. This
@@ -37,6 +37,16 @@ import { checkSentence } from "./BooksStatus";
 // put it in the strip above the tabs as Check now), but nothing on this screen led to it. So Check against bank is in
 // this screen's header and on every Off from books row, and See why on such a row opens the differences under it
 // (`DriftPanel`, R-622: every transaction behind the difference, bank against books), opened by itself after a check.
+// R-688 replaced both: he was still the one pressing and reading.
+//
+// R-688 (Jack, 2026-11-24): "it look at the most current and up to sate bank balance. if it does not match waht out
+// ledger records has. the system needs to on its own check every single transaction against the books to find
+// discrepencyies. you have the bullshit screenw here i have to manual check it ... the point of this software is
+// always to automize and save time." This screen now does that by itself: when an account's balance and books differ
+// in a state the bank's list has not been read for, Check against bank runs with no click (the app also runs it after
+// every bank pull), the row reads Checking every transaction, and it ends as Matches the bank or as the exact
+// transactions that need his answer, drawn under the row with their answers (the same ones as Needs you). There is no
+// See why, no differences panel and no per-row button.
 //
 // R-686 (Jack, 2026-11-23): "can we have color showing how much has been spent in red. so i know thats the balance
 // owed. i then would like if it has a credit limit, lets do a color filling in the ammmount ... lets do tghe actual
@@ -52,7 +62,7 @@ const GROUPS: { id: string; title: string; figure: string; match: (a: BankBalanc
 ];
 
 /** One set of columns for every list, so the figures line up down the page: who, available, the figure, actions. */
-const COLS = "grid grid-cols-[minmax(0,1fr)_auto] lg:grid-cols-[minmax(0,1fr)_190px_150px_200px] items-center gap-x-5 gap-y-2";
+const COLS = "grid grid-cols-[minmax(0,1fr)_auto] lg:grid-cols-[minmax(0,1fr)_180px_150px_270px] items-center gap-x-5 gap-y-2";
 
 const initials = (name: string) =>
   name.split(/\s+/).filter((w) => /^[A-Za-z0-9]/.test(w)).slice(0, 2).map((w) => w[0].toUpperCase()).join("") || "B";
@@ -131,13 +141,11 @@ function BankLogo({ a, look }: { a: BankBalance; look: Look }) {
   );
 }
 
-/** One account on the list, the way a bank shows it: who it is, what is available, the figure, then whether its
- *  books agree with the bank and its statement. What is wrong is said in red under it, with where to fix it. */
-function AccountRow({ a, look, issue, onEdit, onFix, onStatement, onCheck, checking, whyOpen, onWhy, children }: {
-  a: BankBalance; look: Look; issue: AccountIssue | null; onEdit?: () => void; onFix?: () => void; onStatement?: () => void;
-  /** R-685: on a row whose books are off: check every transaction against the bank, and open what is different. */
-  onCheck?: () => void; checking?: boolean; whyOpen?: boolean; onWhy?: () => void;
-  /** The differences, under the row, when See why is open. */
+/** One account on the list, the way a bank shows it: who it is, what is available, the figure, then what the automatic
+ *  check found (R-688). It is red only when he has something to do, and then the exact transactions are under it. */
+function AccountRow({ a, look, check, onEdit, onFix, onStatement, children }: {
+  a: BankBalance; look: Look; check: AccountCheck; onEdit?: () => void; onFix?: () => void; onStatement?: () => void;
+  /** The transactions waiting on his answer on this account, under the row. */
   children?: ReactNode;
 }) {
   const credit = a.type === "credit", loan = a.type === "loan";
@@ -146,6 +154,8 @@ function AccountRow({ a, look, issue, onEdit, onFix, onStatement, onCheck, check
   const used = limit ? Math.min(1, owed / limit) : 0;
   const kind = credit ? "" : a.subtype ? cap(a.subtype) : loan ? "Loan" : "Account";
   const availNow = !credit && a.available !== null && a.available !== undefined ? a.available : null;
+  const red = needsALook(check);
+  const quiet = "inline-flex items-center gap-1 text-[12px] text-muted whitespace-nowrap";
   return (
     <div className="py-3.5 border-t border-line">
       <div className={COLS}>
@@ -153,7 +163,7 @@ function AccountRow({ a, look, issue, onEdit, onFix, onStatement, onCheck, check
           {credit ? <CardArt a={a} look={look} /> : <BankLogo a={a} look={look} />}
           <div className="min-w-0">
             <div className="flex items-center gap-2 min-w-0">
-              {issue && <span className="w-2 h-2 rounded-full bg-danger flex-shrink-0" title="Needs a look" aria-label="Needs a look" />}
+              {red && <span className="w-2 h-2 rounded-full bg-danger flex-shrink-0" title="Needs you" aria-label="Needs you" />}
               <span className="text-[14px] font-medium text-ink truncate" title={a.name}>{a.name}</span>
             </div>
             <div className="text-[12.5px] text-muted truncate">
@@ -178,14 +188,14 @@ function AccountRow({ a, look, issue, onEdit, onFix, onStatement, onCheck, check
           {fmtAmount(credit || loan ? owed : a.balance)}
         </div>
         <div className="col-span-2 lg:col-span-1 flex items-center justify-end gap-3 min-w-0">
-          {issue
-            ? <StatusPill tone="danger">{issue.kind === "connection" ? "Reconnect" : "Off from books"}</StatusPill>
-            : a.drift != null && <span className="inline-flex items-center gap-1 text-[12px] text-muted whitespace-nowrap"><Check size={13} className="text-success" /> Books agree</span>}
-          {issue?.kind === "books" && onWhy ? (
-            <button onClick={onWhy} aria-expanded={!!whyOpen} className="ui-link !text-[12.5px]" title="Every transaction behind the difference, the bank's record against your books">
-              {whyOpen ? "Hide" : "See why"}
-            </button>
-          ) : onStatement && (
+          {check.kind === "connection" && <StatusPill tone="danger">Reconnect</StatusPill>}
+          {check.kind === "answer" && <StatusPill tone="danger">{check.count} to answer</StatusPill>}
+          {check.kind === "match" && <span className={quiet} title="Your books and your bank agree on this account"><Check size={13} className="text-success" /> Matches the bank</span>}
+          {check.kind === "checking" && <span className={quiet} title="The balance and the books differ, so every transaction is being checked against the bank"><RefreshCw size={12} className="animate-spin" /> Checking every transaction</span>}
+          {check.kind === "waiting" && <span className={quiet} title="Every transaction is checked and nothing is left to answer. The bank's own balance has not caught up with its list yet."><Check size={13} className="text-success" /> Checked, bank catching up</span>}
+          {check.kind === "unread" && <span className={quiet} title="The bank could not be read for this account just now. It is checked again by itself after the next bank pull.">Not checked yet</span>}
+          {check.kind === "elsewhere" && <span className={quiet} title={`Your ${check.on} feeds this account from the bank and checks it there`}>Checked on your {check.on}</span>}
+          {onStatement && (
             <button onClick={onStatement} className="ui-link !text-[12.5px]" title="Every transaction with the balance after it, to hold against your bank">
               Statement
             </button>
@@ -198,16 +208,15 @@ function AccountRow({ a, look, issue, onEdit, onFix, onStatement, onCheck, check
           )}
         </div>
       </div>
-      {issue && (
+      {check.kind === "connection" && (
         <div className="mt-2 text-[12.5px] text-danger-ink flex items-baseline gap-3 flex-wrap">
-          <span>{issue.text}</span>
-          {issue.kind === "connection" && onFix && <button onClick={onFix} className="ui-link !text-[12.5px]">Fix it</button>}
-          {issue.kind === "books" && onCheck && (
-            <button onClick={onCheck} disabled={checking} className="ui-link !text-[12.5px] disabled:opacity-50"
-              title="Reads every posted transaction from the bank, puts the books right where it can, and lists what is still different">
-              {checking ? "Checking against the bank" : "Check against bank"}
-            </button>
-          )}
+          <span>The bank connection needs fixing, so this account cannot be checked and its balance may be old.</span>
+          {onFix && <button onClick={onFix} className="ui-link !text-[12.5px]">Fix it</button>}
+        </div>
+      )}
+      {check.kind === "answer" && (
+        <div className="mt-2 text-[12.5px] text-danger-ink">
+          Every transaction on this account was checked against your bank. {check.count === 1 ? "This one needs" : `These ${check.count} need`} your answer; the rest match.
         </div>
       )}
       {children}
@@ -371,15 +380,11 @@ function LookEditor({ a, mine, brand, onSaved, onClose }: {
   );
 }
 
-export default function AccountsView({ onOpenRow, onFix, onCheckBooks, onChanged, onNeeds }: {
+export default function AccountsView({ onOpenRow, onFix, onChanged }: {
   onOpenRow?: (id: string, amount: number) => void;
   onFix?: () => void;
-  /** R-685: open the Full check (the Not imported list), where a difference is answered. */
-  onCheckBooks?: () => void;
   /** R-685: a check changed the books, so the rest of Financials reads again. */
   onChanged?: () => void;
-  /** R-687: open Needs you, where a transaction the check could not settle by itself is answered. */
-  onNeeds?: () => void;
 }) {
   const [statement, setStatement] = useState<BankBalance | null>(null);
   const [editing, setEditing] = useState<BankBalance | null>(null);
@@ -389,11 +394,16 @@ export default function AccountsView({ onOpenRow, onFix, onCheckBooks, onChanged
   const [looks, setLooks] = useState<Record<string, AccountLook>>({});
   const [refreshing, setRefreshing] = useState(false);
   const [checking, setChecking] = useState(false);
-  const [why, setWhy] = useState<string | null>(null);
+  // R-688: what is waiting on his answer, read again whenever the accounts are.
+  const [needsKey, setNeedsKey] = useState(0);
+  const needs = useNeedsYou(needsKey);
+  // R-688: the state the automatic check last ran for, so one state is checked once and not on every re-read.
+  const auto = useRef("");
 
   const load = () => {
     api.bankBalances().then((r) => { setAccounts(r.accounts); setLastSync(r.last_sync); }).catch(() => setAccounts([]));
     api.accountLooks().then(setLooks).catch(() => {});
+    setNeedsKey((k) => k + 1);
   };
 
   useEffect(() => {
@@ -422,28 +432,40 @@ export default function AccountsView({ onOpenRow, onFix, onCheckBooks, onChanged
     }
   };
 
-  // R-685: read every posted transaction from the banks and put the books right (`check_against_bank`, the same run
-  // as the strip above the tabs), say what it did, then open the differences of the row it was pressed on.
-  const checkBank = async (open?: string) => {
+  // Read every posted transaction from the banks and put the books right (`check_against_bank`). Run by itself
+  // (R-688) it speaks only when it changed something or left something for him; pressed, it always says what it did.
+  const checkBank = async (byItself = false) => {
     setChecking(true);
     try {
       const c = await api.checkAgainstBank();
-      toast(checkSentence(c), "success");
+      const changed = Object.entries(c.fixed ?? {}).some(([k, v]) => k !== "agreed" && Number(v) > 0);
+      if (!byItself || changed || (c.missing || 0) + (c.differs || 0) + (c.not_at_bank || 0) > 0) toast(checkSentence(c), "success");
       onChanged?.();
     } catch (e: unknown) {
-      toast(typeof e === "string" ? e : (e as Error)?.message || "The banks could not be read", "error");
+      if (!byItself) toast(typeof e === "string" ? e : (e as Error)?.message || "The banks could not be read", "error");
     } finally {
       setChecking(false);
       load();
-      if (open) setWhy(open);
     }
   };
 
   const list = accounts ?? [];
   const cash = list.filter((a) => a.type === "depository").reduce((s, a) => s + a.balance, 0);
   const owed = list.filter((a) => a.type === "credit").reduce((s, a) => s + Math.abs(a.balance), 0);
-  const issues = list.filter((a) => accountIssue(a, fmtAmount)).length;
-  const offBooks = list.some((a) => accountIssue(a, fmtAmount)?.kind === "books");
+  // R-688: each account's waiting transactions, and the accounts whose balance and books differ with nothing left to
+  // answer: unchecked in this state, or checked with every answer now given. Those are checked without a click.
+  const todo = (a: BankBalance) => needsOnAccount(needs, a.label, a.mask);
+  const off = (a: BankBalance) => a.drift != null && Math.abs(a.drift) >= 0.005 && !a.needs_fix;
+  const stale = list.filter((a) => off(a) && todo(a).items.length === 0)
+    .map((a) => `${a.key}:${a.balance}:${a.drift}:${a.ledger_rows}:${a.checked ? 1 : 0}`).join("|");
+  useEffect(() => {
+    if (!stale || checking || auto.current === stale) return;
+    auto.current = stale;
+    checkBank(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stale, checking]);
+  const verdict = (a: BankBalance) => accountCheck(a, todo(a).items.length, checking, auto.current === stale);
+  const issues = list.filter((a) => needsALook(verdict(a))).length;
   const when = lastSync
     ? new Date(lastSync).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
     : "Not yet";
@@ -459,11 +481,11 @@ export default function AccountsView({ onOpenRow, onFix, onCheckBooks, onChanged
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div className="min-w-0">
           <h3 className="text-[15px] font-medium text-ink">Accounts</h3>
-          <p className="ui-note mt-0.5">Every business account and card your banks send, with what each holds or owes now.</p>
+          <p className="ui-note mt-0.5">Every business account and card your banks send, with what each holds or owes now. Each one is checked against your bank, transaction by transaction, by itself.</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <Button variant={offBooks ? "ink" : "outline"} onClick={() => checkBank()} disabled={checking}
-            title="Reads every posted transaction, in and out, from your banks, puts the books right where it can, and lists what is still different">
+          <Button onClick={() => checkBank()} disabled={checking}
+            title="This runs by itself whenever an account does not match. Press it to read every posted transaction from your banks again now.">
             <ListChecks size={14} /> {checking ? "Checking against the bank" : "Check against bank"}
           </Button>
           <Button onClick={refresh} disabled={refreshing} title="Asks each bank for its latest balance">
@@ -502,17 +524,14 @@ export default function AccountsView({ onOpenRow, onFix, onCheckBooks, onChanged
               <div className="hidden lg:block" />
             </div>
             {rows.map((a) => {
-              const issue = accountIssue(a, fmtAmount);
-              const open = why === a.key && issue?.kind === "books";
+              const check = verdict(a);
               return (
                 <AccountRow key={a.key} a={a} look={lookOf(a, looks[a.key], a.item ? brands[a.item] : undefined)}
-                  issue={issue} onFix={onFix} onEdit={() => setEditing(a)}
-                  onStatement={a.type === "depository" || a.type === "credit" ? () => setStatement(a) : undefined}
-                  onCheck={() => checkBank(a.key)} checking={checking} whyOpen={open} onWhy={() => setWhy(open ? null : a.key)}>
-                  {open && (
+                  check={check} onFix={onFix} onEdit={() => setEditing(a)}
+                  onStatement={a.type === "depository" || a.type === "credit" ? () => setStatement(a) : undefined}>
+                  {check.kind === "answer" && (
                     <div className="mt-3">
-                      <DriftPanel account={a.label} name={a.name} card={a.type === "credit"} onCheckBooks={onCheckBooks} onOpenRow={onOpenRow} onNeeds={onNeeds}
-                        onStatement={() => setStatement(a)} onChanged={() => { load(); onChanged?.(); }} />
+                      <NeedsYou inline data={todo(a)} onChanged={() => { load(); onChanged?.(); }} />
                     </div>
                   )}
                 </AccountRow>

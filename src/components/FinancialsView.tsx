@@ -9,6 +9,7 @@ import {
   Loan, TxnRule, DedupeResult, PlaidSyncSummary, BankSuggestCandidate, ShippingSplit, BankPersonCandidate, ReconciliationMissingDeal,
   TakeoverSuggestion, TieOutRow, RetractedRow, MovedBooking, PlaidHealth,
 } from "../lib/api";
+import type { BankBalance } from "../lib/api";
 import StatusPill from "./StatusPill";
 import { METHOD_PATTERNS, bankFieldMethod, type BankMethod } from "../lib/bankMethod";
 import BankDeclinedCard from "./BankDeclinedCard";
@@ -28,7 +29,8 @@ import BooksStatus from "./BooksStatus";
 import MovedBookings from "./MovedBookings";
 import BankHealthStrip from "./BankHealthStrip";
 import AccountsView from "./AccountsView";
-import { accountIssue } from "../lib/accountLooks";
+import { accountCheck, needsALook } from "../lib/accountLooks";
+import { needsOnAccount } from "./NeedsYou";
 import PersonalView from "./PersonalView";
 import { accountLabel, fixBankConnection } from "../lib/plaidFix";
 import Switch from "./Switch";
@@ -859,9 +861,9 @@ export default function FinancialsView() {
   useEffect(() => { api.personalMe().then((r) => setPersonalOwner(r.owner)).catch(() => setPersonalOwner(false)); }, []);
   // R-678: how many accounts are marked red on Accounts (books off the bank, or the bank needs reconnecting), counted
   // in red on its tab. Read again after every sync, and whenever the ledger's rows change (a check against the bank).
-  const [acctIssues, setAcctIssues] = useState(0);
+  const [acctList, setAcctList] = useState<BankBalance[]>([]);
   useEffect(() => {
-    const read = () => api.bankBalances().then((r) => setAcctIssues(r.accounts.filter((a) => accountIssue(a, fmtAmount)).length)).catch(() => {});
+    const read = () => api.bankBalances().then((r) => setAcctList(r.accounts)).catch(() => {});
     read();
     let un: (() => void) | undefined;
     let dead = false;
@@ -1098,6 +1100,8 @@ export default function FinancialsView() {
   const [retracted, setRetracted] = useState<RetractedRow[]>([]);
   // R-670: everything about the bank feed that needs a person, as one list (re-read with the transactions).
   const needs = useNeedsYou(txns);
+  // R-688: accounts marked red on Accounts: the bank needs reconnecting, or transactions there wait on his answer.
+  const acctIssues = acctList.filter((a) => needsALook(accountCheck(a, needsOnAccount(needs, a.label, a.mask).items.length, false, false))).length;
   // R-614: bookings moved onto another copy of their payment (Take over, Swap, the sync).
   const [moved, setMoved] = useState<MovedBooking[]>([]);
   // R-288 phase 3: booking from history.
@@ -3650,8 +3654,8 @@ export default function FinancialsView() {
           accounts as the Ledger's category picker; nothing here reads any table
           other than bank_txn, so this figure and the Ledger's totals can never
           silently drift apart. */}
-      {tab === "accounts" && <AccountsView onOpenRow={openLedgerRow} onFix={() => setTab("setup")} onCheckBooks={() => setTab("check")}
-        onNeeds={() => setTab("needs")} onChanged={() => { needs.reload(); refreshAll(false); }} />}
+      {tab === "accounts" && <AccountsView onOpenRow={openLedgerRow} onFix={() => setTab("setup")} 
+        onChanged={() => { needs.reload(); refreshAll(false); }} />}
       {tab === "personal" && personalOwner && <PersonalView />}
       {tab === "personal" && !personalOwner && <p className="ui-note">Personal spending is only for the workspace owner.</p>}
       {tab === "report" && <BalancesAndTax onToBook={() => setTab("tobook")} onCheckBooks={() => setTab("check")} onOpenRow={openLedgerRow} />}

@@ -48,20 +48,30 @@ function cardPicture(): string {
   g.fillStyle = "white"; g.font = "bold 20px sans-serif"; g.fillText("SAMPLE CARD", 22, 44);
   return c.toDataURL("image/jpeg", 0.85).split("base64,")[1];
 }
+let checkRuns = 0;
+const declined: any[] = [
+  { id: "d1", txn_id: "t1", source: "plaid", reason: "missing", account_id: "Operating \u00b7\u00b70451", posted_at: d(3), amount: 60.5, direction: "out",
+    description: "PAPER SUPPLY CO", matched: [], bank: {}, status: "open", resolved_by: "", resolved_at: "", created_at: d(1) },
+  { id: "d2", txn_id: "t2", source: "plaid", reason: "differs", account_id: "Operating \u00b7\u00b70451", posted_at: d(2), amount: 25, direction: "out",
+    description: "MONTHLY SERVICE FEE", matched: [], status: "open", resolved_by: "", resolved_at: "", created_at: d(1),
+    bank: { amount: 25, posted_at: d(2), description: "MONTHLY SERVICE FEE", fields: ["amount"], ledger: { posted_at: d(2), amount: 20, direction: "out", description: "MONTHLY SERVICE FEE" } } },
+];
 const looks: Record<string, any> = { a4: { color: "#AEAEB2" }, a9: { art: cardPicture() } };
 (window as any).__FIXTURE = (cmd: string, args?: any) => {
   switch (cmd) {
     case "bank_balances": return {
       last_sync: new Date().toISOString(), reserve_key: "",
       accounts: [
-        acct("a1", "pi_a", "Harbor Bank", "Business Checking", "1182", "depository", 48210.55, { available: 46110.55 }),
-        acct("a2", "pi_a", "Harbor Bank", "Business Savings", "2290", "depository", 120000),
-        acct("a3", "pi_b", "Summit Credit Union", "Operating", "0451", "depository", 9312.4, { drift: -85.5 }),
-        acct("a4", "pi_c", "Northfield Card", "Business Rewards", "7731", "credit", -3920.18, { limit: 15000 }),
+        // R-688: one account in each state the automatic check can leave it in.
+        acct("a1", "pi_a", "Harbor Bank", "Business Checking", "1182", "depository", 48210.55, { available: 46110.55, drift: 0, checked: true }),
+        acct("a2", "pi_a", "Harbor Bank", "Business Savings", "2290", "depository", 120000, { checked_on: "Mac" }),
+        acct("a3", "pi_b", "Summit Credit Union", "Operating", "0451", "depository", 9312.4, { drift: -85.5, checked: true }),
+        // Off and not yet checked in this state: the screen checks it by itself, and the check below settles it.
+        acct("a4", "pi_c", "Northfield Card", "Business Rewards", "7731", "credit", -3920.18, { limit: 15000, drift: checkRuns > 0 ? 0 : -12, checked: checkRuns > 0 }),
         acct("a5", "pi_b", "Summit Credit Union", "Visa Business", "8810", "credit", -11250, { limit: 12500, needs_fix: true }),
         // R-683: card names that say their finish.
         acct("a6", "pi_c", "Northfield Card", "Business Platinum", "3004", "credit", -18420.75, { limit: 50000, drift: 0 }),
-        acct("a7", "pi_c", "Northfield Card", "Business Gold", "5512", "credit", -2210, { limit: 20000, drift: 0 }),
+        acct("a7", "pi_c", "Northfield Card", "Business Gold", "5512", "credit", -2210, { limit: 20000, drift: -30, checked: true }),
         acct("a8", "pi_a", "Harbor Bank", "Reserve Black", "9001", "credit", -640.2, { limit: 30000, drift: 0 }),
         acct("a9", "pi_a", "Harbor Bank", "Ink Blue Cash", "4470", "credit", -5120, { limit: 10000, drift: 0 }),
       ],
@@ -80,7 +90,13 @@ const looks: Record<string, any> = { a4: { color: "#AEAEB2" }, a9: { art: cardPi
       return { ...looks };
     }
     // R-685: Check against bank from Accounts, and the differences under an Off from books row.
-    case "check_against_bank": return { checked_at: new Date().toISOString(), accounts: [], missing: 2, differs: 0, not_at_bank: 0, new_rows: 0, closed: 0, errors: [],
+    // R-688: what waits on an answer, on the Operating account only.
+    case "list_near_duplicates": return [];
+    case "list_retracted": return [];
+    case "list_bank_declined": return { check: null, rows: declined.filter((d) => d.status === "open") };
+    case "resolve_bank_declined": { const d = declined.find((x) => x.id === args?.id); if (d) d.status = "imported"; return { ok: true }; }
+    case "session_me": return null;
+    case "check_against_bank": checkRuns += 1; return { checked_at: new Date().toISOString(), accounts: [], missing: 2, differs: 0, not_at_bank: 0, new_rows: 0, closed: 0, errors: [],
       fixed: { imported: 3, amended: 0, removed: 1, moved: 0, two_payments: 0, copies: 0, agreed: 0 } };
     case "explain_bank_drift": return {
       account: "Operating ··0451", bank_balance: 9312.4, ledger_net: 100, baseline: 9297.9, baseline_at: d(40), drift: -85.5, books_balance: 9397.9,

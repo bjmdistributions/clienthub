@@ -123,7 +123,21 @@ export function useNeedsYou(reloadKey: unknown) {
   return { pairs, retracted, declined, items: needsYou(pairs, retracted, declined), reload };
 }
 
-export default function NeedsYou({ data, onChanged }: { data: ReturnType<typeof useNeedsYou>; onChanged: () => void }) {
+/** R-688: what is waiting on an answer on ONE account, for the Accounts screen to draw under that account's row.
+ *  The lists name an account by the label its ledger rows carry; the last four settle a label the bank reworded. */
+export function needsOnAccount(data: ReturnType<typeof useNeedsYou>, label: string, mask: string): ReturnType<typeof useNeedsYou> {
+  const on = (acct: string | null | undefined) => !!acct && (acct === label || (!!mask && acct.endsWith(`\u00b7\u00b7${mask}`)));
+  const pairs = data.pairs.filter((p) => on(p.keep.account) || on(p.extra.account));
+  const retracted = data.retracted.filter((r) => on(r.account));
+  const declined = data.declined.filter((d) => on(d.account_id));
+  return { pairs, retracted, declined, items: needsYou(pairs, retracted, declined), reload: data.reload };
+}
+
+export default function NeedsYou({ data, onChanged, inline }: {
+  data: ReturnType<typeof useNeedsYou>; onChanged: () => void;
+  /** R-688: under an account's row on Accounts: no heading and no empty state, just the questions. */
+  inline?: boolean;
+}) {
   const { pairs, retracted, declined, items, reload } = data;
   const me = useSessionMe();
   const [busy, setBusy] = useState("");
@@ -184,7 +198,32 @@ export default function NeedsYou({ data, onChanged }: { data: ReturnType<typeof 
     } finally { setBusy(""); }
   };
 
+  // R-688: many findings of one kind on an account (the bank lists a run of transactions the books lack) take one
+  // answer for all of them, never one click each. Only answers that remove nothing are offered this way.
+  const alike = (n: Need) => `${n.kind}|${n.question}|${n.answers.map((x) => x.id).join(",")}`;
+  const groups = Object.values(items.filter((n) => n.kind === "declined").reduce<Record<string, Need[]>>((m, n) => {
+    (m[alike(n)] ??= []).push(n);
+    return m;
+  }, {})).filter((g) => g.length > 3);
+  const answerAll = async (group: Need[], a: NeedAnswer) => {
+    setBusy("all");
+    let ok = 0;
+    try {
+      for (const n of group) {
+        const d = declined.find((x) => `d:${x.id}` === n.key);
+        if (!d) continue;
+        const res = await api.resolveBankDeclined(d.id, a.id as Parameters<typeof api.resolveBankDeclined>[1], me?.display_name || me?.email || "");
+        if (!res.already && res.ok !== false) ok += 1;
+      }
+      const rest = group.length - ok;
+      toast(rest ? `${ok} answered. ${rest} need a second look and are still listed.` : `All ${ok} answered.`, rest ? undefined : "success");
+    } catch (e: unknown) {
+      toast(typeof e === "string" ? e : (e as Error)?.message || "That could not be saved", "error");
+    } finally { setBusy(""); reload(); onChanged(); }
+  };
+
   if (items.length === 0) {
+    if (inline) return null;
     return (
       <div className="rounded-xl bg-surface-2 px-5 py-8 text-center">
         <div className="text-[15px] font-medium text-ink">Nothing needs you</div>
@@ -194,9 +233,21 @@ export default function NeedsYou({ data, onChanged }: { data: ReturnType<typeof 
   }
   return (
     <div className="space-y-3 min-w-0">
-      <p className="ui-note">
-        {items.length === 1 ? "One thing" : `${items.length} things`} the app could not settle from your bank's list. Each answer is saved at once, and anything removed is backed up first.
-      </p>
+      {!inline && (
+        <p className="ui-note">
+          {items.length === 1 ? "One thing" : `${items.length} things`} the app could not settle from your bank's list. Each answer is saved at once, and anything removed is backed up first.
+        </p>
+      )}
+      {groups.map((g) => (
+        <div key={alike(g[0])} className="rounded-xl bg-surface-2 px-4 py-3 flex items-center gap-3 flex-wrap min-w-0">
+          <span className="text-[13px] text-ink min-w-0 flex-1">{g.length} alike: {g[0].question.toLowerCase()}.</span>
+          {g[0].answers.filter((a) => !a.confirm).map((a) => (
+            <Button key={a.id} size="sm" variant={a.primary ? "ink" : "outline"} disabled={busy !== ""} onClick={() => answerAll(g, a)}>
+              {busy === "all" ? "Saving" : `${a.label}, all ${g.length}`}
+            </Button>
+          ))}
+        </div>
+      ))}
       {items.map((n) => {
         const f = follow[n.key];
         const answers = f?.answers ?? n.answers;

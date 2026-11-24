@@ -23879,13 +23879,37 @@ async fn check_against_bank_run(import_all: bool) -> Result<Value, String> {
         .filter(|t| t.posted > 0 && t.not_exact == 0 && !stuck.contains(&t.account)
             && !ledger2.iter().any(|l| l.retracted && l.account == t.account))
         .map(|t| t.account.clone()).collect();
+    // R-688 (Jack: "the system needs to on its own check every single transaction against the books to find
+    // discrepencyies ... if i wanted to manual check this stuff i would have already done it"). The verdict on an
+    // account is this transaction check, not its balance. Once the bank's posted list has been read for it and
+    // nothing on it is left for a person (no open finding, no pair that looks alike, no POSTED row the bank took
+    // back), its books are as right as the bank's own list can make them, and whatever still sits between the two
+    // totals is the bank's balance running behind its list, a pending hold, or his own earlier answer. Its check
+    // starts from here. Before, one booked pending hold the bank had dropped, or one finding he had already answered,
+    // kept the account "off" for good with nothing to press.
+    let settled_accounts: std::collections::HashSet<String> = {
+        let conn = pool().get().map_err(|e| e.to_string())?;
+        let mut open: std::collections::HashSet<String> = conn
+            .prepare("SELECT DISTINCT COALESCE(account_id,'') FROM bank_declined WHERE status='open'")
+            .and_then(|mut st| st.query_map([], |r| r.get::<_, String>(0)).map(|it| it.filter_map(|x| x.ok()).collect::<Vec<_>>()))
+            .unwrap_or_default().into_iter()
+            .map(|a| aliases.get(&a).cloned().unwrap_or(a)).collect();
+        let by_id: std::collections::HashMap<&str, &crate::bank_declined::LedgerTxn> = ledger2.iter().map(|l| (l.id.as_str(), l)).collect();
+        for d in crate::bank_near_dup::near_duplicates(&near_dup_rows(&conn)?) {
+            for id in [&d.keep_id, &d.extra_id] { if let Some(l) = by_id.get(id.as_str()) { open.insert(l.account.clone()); } }
+        }
+        after.tallies.iter()
+            .filter(|t| t.posted > 0 && !stuck.contains(&t.account) && !open.contains(&t.account)
+                && !ledger2.iter().any(|l| l.retracted && !l.pending && l.account == t.account))
+            .map(|t| t.account.clone()).collect()
+    };
     let mut accepted = 0usize;
     {
         let recon = { let conn = pool().get().map_err(|e| e.to_string())?; reconcile_accounts_inner(&conn, false)?.0 };
         let mut base: serde_json::Map<String, Value> = read_setting("recon_baselines")
             .and_then(|s| serde_json::from_str::<Value>(&s).ok()).and_then(|v| v.as_object().cloned()).unwrap_or_default();
         let mut at = recon_baseline_times();
-        for r in recon.iter().filter(|r| clean.contains(&r.account) && r.drift.abs() >= 0.005) {
+        for r in recon.iter().filter(|r| (clean.contains(&r.account) || settled_accounts.contains(&r.account)) && r.drift.abs() >= 0.005) {
             base.insert(r.account.clone(), json!(r.implied_opening));
             at.insert(r.account.clone(), json!(now));
             accepted += 1;
@@ -23921,6 +23945,16 @@ async fn check_against_bank_run(import_all: bool) -> Result<Value, String> {
     });
     conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('bank_check', ?1)", [summary.to_string()])
         .map_err(|e| e.to_string())?;
+    // R-688: the state each account the bank was read for was judged in, so it is not judged again until it moves.
+    {
+        let read: std::collections::HashSet<&str> = after.tallies.iter().map(|t| t.account.as_str()).collect();
+        let mut seen = recon_seen();
+        for r in reconcile_accounts_inner(&conn, false)?.0.iter().filter(|r| read.contains(r.account.as_str())) {
+            seen.insert(r.account.clone(), json!(recon_signature(r)));
+        }
+        conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('bank_check_seen', ?1)", [Value::Object(seen).to_string()])
+            .map_err(|e| e.to_string())?;
+    }
     tracing::info!("check against bank: {} posted; found {} missing, {} differ, {} not at the bank; left {} / {} / {}; {} closed",
         bank.len(), missing, differs, not_at_bank, left_missing, left_differs, left_not_at_bank, closed);
     drop(conn);
@@ -23963,9 +23997,20 @@ async fn check_against_bank_if_due() {
         .map_or(true, |t| Utc::now().signed_duration_since(t) > chrono::Duration::hours(hours));
     // R-670: once a day, and whenever an account does not agree with the bank (at most once an hour), so the books
     // are put right after the pull that showed the difference, not a day later.
-    let off = pool().get().ok().and_then(|c| reconcile_accounts_inner(&c, false).ok())
-        .is_some_and(|(r, _)| r.iter().any(|a| a.drift.abs() >= 0.005));
-    if !older_than("bank_check_tried", 1) || (!older_than("bank_check", 24) && !off) { return; }
+    // R-688: an account that is off in a state Check against bank has not read yet is checked NOW (a few minutes
+    // apart at most, so a bank that cannot be read is not hammered); one already checked in this very state waits
+    // for the day's run, since the bank's list would say the same. Only accounts this computer feeds count.
+    let (off, unread) = pool().get().map(|c| {
+        let rows = bank_balances_list(&c);
+        let is_off = |a: &&Value| a.get("drift").and_then(|v| v.as_f64()).is_some_and(|d| d.abs() >= 0.005);
+        (rows.iter().any(|a| is_off(&a)), rows.iter().any(|a| is_off(&a) && a.get("checked").and_then(|v| v.as_bool()) != Some(true)))
+    }).unwrap_or((false, false));
+    let tried_within_minutes = |m: i64| read_setting("bank_check_tried")
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+        .is_some_and(|t| Utc::now().signed_duration_since(t) < chrono::Duration::minutes(m));
+    if unread {
+        if tried_within_minutes(3) { return; }
+    } else if !older_than("bank_check_tried", 1) || (!older_than("bank_check", 24) && !off) { return; }
     if let Ok(c) = pool().get() {
         let _ = c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('bank_check_tried', ?1)", [Utc::now().to_rfc3339()]);
     }
@@ -24541,9 +24586,19 @@ fn plaid_reserve_candidates(conn: &rusqlite::Connection) -> Vec<Value> {
 /// not cover (loans, investments). A card's balance is what is owed, as Plaid gives it.
 pub(crate) fn bank_balances_list(conn: &rusqlite::Connection) -> Vec<Value> {
     let aliases = account_alias_map();
-    let checks: std::collections::HashMap<String, (f64, i64)> = reconcile_accounts_inner(conn, false)
-        .map(|(rows, _)| rows.into_iter().map(|r| (r.account, (r.drift, r.txn_count))).collect())
+    // (how far off, rows held, the state it is in now)
+    let checks: std::collections::HashMap<String, (f64, i64, String)> = reconcile_accounts_inner(conn, false)
+        .map(|(rows, _)| rows.into_iter().map(|r| { let sig = recon_signature(&r); (r.account, (r.drift, r.txn_count, sig)) }).collect())
         .unwrap_or_default();
+    // R-688: the state each account was last checked against the bank's list in.
+    let seen_state = recon_seen();
+    // R-688: this computer judges only the accounts it feeds (R-590). An account another computer feeds is checked
+    // there, against a balance and a list read at the same moment; judged here it would be held against whatever
+    // this computer's own, often idle, link last heard.
+    let mine = crate::bank_feed::my_accounts(conn);
+    let fed = crate::bank_feed::fed_keys_readonly(conn, &mine);
+    let owners: std::collections::HashMap<String, String> = crate::bank_feed::report(conn, &mine).into_iter()
+        .filter_map(|o| Some((o.get("key")?.as_str()?.to_string(), o.get("owner_name")?.as_str()?.to_string()))).collect();
     let mut out: Vec<Value> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let rows: Vec<(String, String, String)> = conn
@@ -24554,11 +24609,18 @@ pub(crate) fn bank_balances_list(conn: &rusqlite::Connection) -> Vec<Value> {
     let r2 = |x: f64| (x * 100.0).round() / 100.0;
     let personal = crate::personal::account_keys(conn); // R-660: shown in Personal, never here
     let health = plaid_health_load(conn); // R-678: an account whose bank needs its connection fixed is marked red
+    // R-688: an account under two links is shown through its NEWEST link, the one Check against bank reads it
+    // through (`recon_items`), while the banks stay listed oldest first.
+    let mut newest: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for (item, _, aj) in &rows {
+        for a in serde_json::from_str::<Vec<Value>>(aj).unwrap_or_default() { newest.insert(plaid_account_key(&a), item.clone()); }
+    }
     for (item, institution, aj) in rows {
         let accts: Vec<Value> = serde_json::from_str(&aj).unwrap_or_default();
         for a in &accts {
             if crate::personal::is_personal(&personal, &institution, a) { continue; }
             let key = plaid_account_key(a);
+            if newest.get(&key).is_some_and(|i| i != &item) { continue; }
             if !seen.insert(key.clone()) { continue; }
             let kind = a.get("type").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let raw_name = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
@@ -24566,7 +24628,9 @@ pub(crate) fn bank_balances_list(conn: &rusqlite::Connection) -> Vec<Value> {
             let raw = if mask.is_empty() { raw_name.to_string() } else { format!("{} \u{00b7}\u{00b7}{}", raw_name, mask) };
             let label = aliases.get(&raw).cloned().unwrap_or(raw);
             let bal = a.get("balances");
-            let check = if kind == "depository" || kind == "credit" { checks.get(&label).copied() } else { None };
+            let feed_key = crate::bank_feed::account_key(&institution, a);
+            let here = fed.contains(&feed_key);
+            let check = if here && (kind == "depository" || kind == "credit") { checks.get(&label).cloned() } else { None };
             out.push(json!({
                 "key": key,
                 "institution": institution,
@@ -24577,8 +24641,12 @@ pub(crate) fn bank_balances_list(conn: &rusqlite::Connection) -> Vec<Value> {
                 "balance": r2(bal.and_then(|b| b.get("current")).and_then(|v| v.as_f64()).unwrap_or(0.0)),
                 "available": bal.and_then(|b| b.get("available")).and_then(|v| v.as_f64()).map(r2),
                 "label": label,
-                "drift": check.map(|c| c.0),
-                "ledger_rows": check.map(|c| c.1).unwrap_or(0),
+                "drift": check.as_ref().map(|c| c.0),
+                "ledger_rows": check.as_ref().map(|c| c.1).unwrap_or(0),
+                // R-688: Check against bank has read the bank's list for this account in the state it is in now.
+                "checked": check.as_ref().map(|c| seen_state.get(&label).and_then(|v| v.as_str()) == Some(c.2.as_str())),
+                // R-688: the computer that feeds and checks this account, when it is not this one.
+                "checked_on": if here { Value::Null } else { owners.get(&feed_key).filter(|n| !n.is_empty()).map(|n| json!(n)).unwrap_or(Value::Null) },
                 // R-659: the card's limit, and the bank link the account came through (for its logo and colour).
                 "limit": bal.and_then(|b| b.get("limit")).and_then(|v| v.as_f64()).map(r2),
                 "item": item,
@@ -29344,11 +29412,13 @@ fn account_statement_inner(conn: &rusqlite::Connection, account: &str, card: boo
 /// The check itself, read-only apart from the baselines it hands back for the caller to write
 /// (`None` when there is nothing to reconcile against). R-579: Check books reads it too, without
 /// writing baselines.
-/// Every bank link's account list with personal accounts left out (R-660), oldest link first, the order
-/// `bank_balances_list` reads them in, so the books check and the Accounts screen keep the same copy of an account.
+/// Every bank link's account list with personal accounts left out (R-660), NEWEST link first. Check against bank
+/// reads an account's posted list through its newest link (`bank_posted_history`), so the balance is taken from the
+/// same link: an older link to the same account may be dead and hold a balance from the day it stopped (R-688).
+/// `bank_balances_list` keeps the same copy.
 fn recon_items(conn: &rusqlite::Connection) -> Vec<Vec<Value>> {
     let personal = crate::personal::account_keys(conn);
-    conn.prepare("SELECT COALESCE(institution,''), accounts_json FROM plaid_items ORDER BY created_at")
+    conn.prepare("SELECT COALESCE(institution,''), accounts_json FROM plaid_items ORDER BY created_at DESC")
         .and_then(|mut st| st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
             .map(|it| it.filter_map(|x| x.ok()).collect::<Vec<_>>()))
         .unwrap_or_default()
@@ -29365,10 +29435,21 @@ fn recon_items(conn: &rusqlite::Connection) -> Vec<Vec<Value>> {
 /// skip the repeat by `plaid_account_key`, and this check did not, so it held the books against twice the balance.
 /// Two different accounts that share a label still add up. The second map is what the repeats came to, by label:
 /// what the check used to add on top (`recon_heal_double_counted` needs it).
-fn recon_bank_by_label(items: &[Vec<Value>], aliases: &std::collections::HashMap<String, String>)
-    -> (std::collections::HashMap<String, f64>, std::collections::HashMap<String, f64>) {
+///
+/// R-688: `avail` is the bank's AVAILABLE balance for a checking or savings label (absent when the bank gives none).
+/// A bank's "current" balance can run a day behind the transactions it already lists as posted; the available
+/// balance is the up-to-date one, so the check holds the books against both and agrees when either fits.
+struct ReconBank {
+    bank: std::collections::HashMap<String, f64>,
+    extra: std::collections::HashMap<String, f64>,
+    avail: std::collections::HashMap<String, f64>,
+}
+
+fn recon_bank_by_label(items: &[Vec<Value>], aliases: &std::collections::HashMap<String, String>) -> ReconBank {
     let mut bank: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
     let mut extra: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+    let mut avail: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+    let mut no_avail: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for accts in items {
         for a in accts {
@@ -29382,11 +29463,37 @@ fn recon_bank_by_label(items: &[Vec<Value>], aliases: &std::collections::HashMap
             // A card's "current" is money OWED — the ledger's sign convention for
             // a card is the mirror of a depository account, so negate it here.
             let signed = if kind == "credit" { -cur.abs() } else { cur };
-            if seen.insert(plaid_account_key(a)) { *bank.entry(label).or_insert(0.0) += signed; }
-            else { *extra.entry(label).or_insert(0.0) += signed; }
+            if seen.insert(plaid_account_key(a)) {
+                match a.get("balances").and_then(|b| b.get("available")).and_then(|v| v.as_f64()).filter(|_| kind == "depository") {
+                    Some(av) => *avail.entry(label.clone()).or_insert(0.0) += av,
+                    None => { no_avail.insert(label.clone()); }
+                }
+                *bank.entry(label).or_insert(0.0) += signed;
+            } else { *extra.entry(label).or_insert(0.0) += signed; }
         }
     }
-    (bank, extra)
+    for l in &no_avail { avail.remove(l); }
+    ReconBank { bank, extra, avail }
+}
+
+/// R-688: the state an account's books check was last held against the bank's posted list in: its balance, the sum
+/// of its posted rows and how many rows it holds. While it is unchanged, another Check against bank would read the
+/// same list and decide the same; once it moves, an account that is off is checked again at once.
+fn recon_signature(r: &ReconAccount) -> String {
+    format!("{:.2}|{:.2}|{}", r.bank_balance, r.ledger_net, r.txn_count)
+}
+
+/// R-688: the signature each account had when Check against bank last finished (`bank_check_seen`).
+fn recon_seen() -> serde_json::Map<String, Value> {
+    read_setting("bank_check_seen").and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|v| v.as_object().cloned()).unwrap_or_default()
+}
+
+/// R-688: whether the books fit the bank's up-to-date (available) balance though they miss its current one: the
+/// posted rows add up to it outright, or they sit exactly as far from it as the starting point says.
+fn recon_fits_available(avail: Option<f64>, net: f64, settled: f64, baseline: Option<f64>) -> bool {
+    let Some(av) = avail else { return false };
+    recon_is_exact(av, net) || baseline.is_some_and(|b| (av - net + settled - b).abs() < 0.005)
 }
 
 /// R-687: the new starting point for an account whose old one was taken while its balance was counted twice, or
@@ -29410,7 +29517,7 @@ fn recon_heal_double_counted() {
     let healed: Vec<(String, f64, f64, f64)> = {
         let Ok(conn) = pool().get() else { return };
         let aliases = account_alias_map();
-        let (_, extra) = recon_bank_by_label(&recon_items(&conn), &aliases);
+        let extra = recon_bank_by_label(&recon_items(&conn), &aliases).extra;
         let recon = if extra.is_empty() { Vec::new() } else { reconcile_accounts_inner(&conn, false).map(|x| x.0).unwrap_or_default() };
         recon.iter().filter_map(|r| {
             let x = *extra.get(&r.account)?;
@@ -29450,7 +29557,7 @@ fn reconcile_accounts_inner(conn: &rusqlite::Connection, rebaseline: bool) -> Re
     // Live balances, keyed by the SAME label the importer writes onto bank_txn rows,
     // through the same alias map — otherwise a renamed/re-masked account compares its
     // balance against an empty ledger and reports the whole balance as drift.
-    let (bank, _) = recon_bank_by_label(&recon_items(conn), &aliases);
+    let ReconBank { bank, avail, .. } = recon_bank_by_label(&recon_items(conn), &aliases);
     if bank.is_empty() {
         return Ok((Vec::new(), None)); // nothing to reconcile against
     }
@@ -29494,6 +29601,9 @@ fn reconcile_accounts_inner(conn: &rusqlite::Connection, rebaseline: bool) -> Re
             _ => 0.0,
         };
         let drift = match baseline { Some(b) if !exact => r2(implied + settled - b), _ => 0.0 };
+        // R-688: the bank's current balance can be a day behind what it already lists as posted. The books are not
+        // off when they fit the up-to-date balance.
+        let drift = if drift.abs() >= 0.005 && recon_fits_available(avail.get(&label).copied(), net, settled, baseline) { 0.0 } else { drift };
         // Keep the ORIGINAL baseline unless asked to re-accept, or there wasn't one —
         // otherwise every check silently forgives the drift it just found.
         let keep = if exact { 0.0 } else if rebaseline { implied } else { baseline.unwrap_or(implied) };
@@ -29526,13 +29636,14 @@ mod r687_counted_once_tests {
         let checking = json!({ "account_id": "c1", "name": "Checking", "mask": "3655", "type": "depository", "subtype": "checking", "balances": { "current": 5431.11 } });
         // The same card under two links (each link gives it its own account id), and a checking account under one.
         let items = vec![vec![card("a1", 4242.75), checking.clone()], vec![card("a2", 4242.75)]];
-        let (bank, extra) = recon_bank_by_label(&items, &Default::default());
+        let super::ReconBank { bank, extra, avail } = recon_bank_by_label(&items, &Default::default());
+        assert!(avail.is_empty(), "no available balance was given");
         assert_eq!(bank["Example Card \u{00b7}\u{00b7}1009"], -4242.75, "what is owed, once");
         assert_eq!(extra["Example Card \u{00b7}\u{00b7}1009"], -4242.75, "what the repeat used to add");
         assert_eq!(bank["Checking \u{00b7}\u{00b7}3655"], 5431.11);
         assert!(!extra.contains_key("Checking \u{00b7}\u{00b7}3655"));
         // One link only: nothing is a repeat.
-        let (bank, extra) = recon_bank_by_label(&items[..1], &Default::default());
+        let super::ReconBank { bank, extra, .. } = recon_bank_by_label(&items[..1], &Default::default());
         assert_eq!(bank["Example Card \u{00b7}\u{00b7}1009"], -4242.75);
         assert!(extra.is_empty());
     }
@@ -29540,9 +29651,35 @@ mod r687_counted_once_tests {
     #[test]
     fn two_different_accounts_sharing_a_label_still_add_up() {
         let a = |pid: &str, bal: f64| json!({ "persistent_account_id": pid, "name": "Savings", "mask": "", "type": "depository", "subtype": "savings", "balances": { "current": bal } });
-        let (bank, extra) = recon_bank_by_label(&[vec![a("p1", 100.0), a("p2", 250.0)]], &Default::default());
+        let super::ReconBank { bank, extra, .. } = recon_bank_by_label(&[vec![a("p1", 100.0), a("p2", 250.0)]], &Default::default());
         assert_eq!(bank["Savings"], 350.0);
         assert!(extra.is_empty());
+    }
+
+    // R-688: a bank's current balance a day behind the payments it already lists as posted.
+    #[test]
+    fn books_that_fit_the_up_to_date_balance_are_not_off() {
+        use super::{recon_fits_available, recon_signature, ReconAccount};
+        let checking = json!({ "persistent_account_id": "p-chk", "name": "Checking", "mask": "3655", "type": "depository", "subtype": "checking",
+                               "balances": { "current": 8000.0, "available": 7400.0 } });
+        let card = json!({ "persistent_account_id": "p-crd", "name": "Card", "mask": "1009", "type": "credit", "subtype": "credit card",
+                           "balances": { "current": 300.0, "available": 4700.0 } });
+        let rb = recon_bank_by_label(&[vec![checking, card]], &Default::default());
+        assert_eq!(rb.avail["Checking \u{00b7}\u{00b7}3655"], 7400.0);
+        assert!(!rb.avail.contains_key("Card \u{00b7}\u{00b7}1009"), "a card's available is credit left, not a balance");
+        // The posted rows add up to the available balance: 600.00 of posted payments the current balance lacks.
+        assert!(recon_fits_available(Some(7400.0), 7400.0, 0.0, Some(250.0)));
+        // Or they sit as far from it as the starting point says (older history the books do not hold).
+        assert!(recon_fits_available(Some(7400.0), 7150.0, 0.0, Some(250.0)));
+        // A real difference fits neither balance.
+        assert!(!recon_fits_available(Some(7400.0), 7100.0, 0.0, Some(250.0)));
+        assert!(!recon_fits_available(None, 7400.0, 0.0, Some(250.0)));
+        // The signature moves with the balance, the rows' sum, or their number, and with nothing else.
+        let acct = |bal: f64, net: f64, n: i64| ReconAccount { account: "A".into(), bank_balance: bal, ledger_net: net, implied_opening: 0.0,
+            baseline: None, drift: 12.0, txn_count: n, settled_before: 0.0 };
+        assert_eq!(recon_signature(&acct(8000.0, 7400.0, 10)), recon_signature(&acct(8000.0, 7400.0, 10)));
+        assert_ne!(recon_signature(&acct(8000.0, 7400.0, 10)), recon_signature(&acct(8000.01, 7400.0, 10)));
+        assert_ne!(recon_signature(&acct(8000.0, 7400.0, 10)), recon_signature(&acct(8000.0, 7400.0, 11)));
     }
 
     #[test]

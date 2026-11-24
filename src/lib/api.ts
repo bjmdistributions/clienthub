@@ -1162,6 +1162,10 @@ export interface BankBalance {
   item?: string;
   /** R-678: its bank wants a sign-in, or stopped sharing this account (Fix connection under Setup). */
   needs_fix?: boolean;
+  /** R-688: Check against bank has read the bank's list for this account in the state it is in now. */
+  checked?: boolean | null;
+  /** R-688: the computer that feeds and checks this account, when it is not this one (then `drift` is null). */
+  checked_on?: string | null;
 }
 
 /** R-678: how he has set an account's card to look, by account key; a missing field is the bank's own. */

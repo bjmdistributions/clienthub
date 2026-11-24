@@ -1,7 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { accountIssue, autoFinish, CARD_FINISHES, darkText, finishFor, luminance } from "./accountLooks";
-
-const fmt = (n: number) => `$${n.toFixed(2)}`;
+import { accountCheck, autoFinish, CARD_FINISHES, darkText, finishFor, luminance, needsALook } from "./accountLooks";
 
 describe("R-678 account cards", () => {
   it("picks the text that reads on the card", () => {
@@ -13,12 +11,25 @@ describe("R-678 account cards", () => {
     expect(luminance("not a colour")).toBe(0);
   });
 
-  it("names what is wrong, the connection first", () => {
-    expect(accountIssue({ drift: 0 }, fmt)).toBeNull();
-    expect(accountIssue({ drift: null }, fmt)).toBeNull();
-    expect(accountIssue({ drift: 0.004 }, fmt)).toBeNull();
-    expect(accountIssue({ drift: -43.1 }, fmt)).toEqual({ kind: "books", text: "Your books are $43.10 away from what the bank shows." });
-    expect(accountIssue({ drift: -43.1, needs_fix: true }, fmt)?.kind).toBe("connection");
+  it("R-688: an account's row says what the automatic check found, and is red only when he has something to do", () => {
+    const a = (over: object) => ({ type: "depository", drift: 0 as number | null, ...over });
+    expect(accountCheck(a({}), 0, false, false)).toEqual({ kind: "match" });
+    expect(accountCheck(a({ drift: 0.004 }), 0, false, false)).toEqual({ kind: "match" });
+    // Off and not checked in this state: it is being checked, with no click.
+    expect(accountCheck(a({ drift: -150, checked: false }), 0, false, false)).toEqual({ kind: "checking" });
+    expect(accountCheck(a({ drift: -150, checked: false }), 0, true, false)).toEqual({ kind: "checking" });
+    // Checked, and these transactions are left for him.
+    expect(accountCheck(a({ drift: -150, checked: true }), 2, false, true)).toEqual({ kind: "answer", count: 2 });
+    expect(accountCheck(a({ drift: 0, checked: true }), 1, false, true)).toEqual({ kind: "answer", count: 1 });
+    // Checked, nothing left, the bank's balance still behind: nothing for him to do, so not red.
+    expect(accountCheck(a({ drift: -150, checked: true }), 0, false, true)).toEqual({ kind: "waiting" });
+    // The bank could not be read this time.
+    expect(accountCheck(a({ drift: -150, checked: false }), 0, false, true)).toEqual({ kind: "unread" });
+    expect(accountCheck(a({ drift: -150, needs_fix: true }), 3, false, false)).toEqual({ kind: "connection" });
+    expect(accountCheck(a({ drift: null, checked_on: "Mac" }), 0, false, false)).toEqual({ kind: "elsewhere", on: "Mac" });
+    expect(accountCheck(a({ type: "loan", drift: null }), 0, false, false)).toEqual({ kind: "none" });
+    expect(["match", "checking", "waiting", "unread", "elsewhere", "none"].every((k) => !needsALook({ kind: k } as never))).toBe(true);
+    expect(needsALook({ kind: "answer", count: 1 }) && needsALook({ kind: "connection" })).toBe(true);
   });
 
   it("R-683: picks a card's finish from its name", () => {
